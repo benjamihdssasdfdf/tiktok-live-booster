@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner_id: [0, 1, 2]
+        runner_id: [0]
 
     steps:
       - name: Checkout Repository
