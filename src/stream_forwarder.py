@@ -371,15 +371,49 @@ class ScrcpyStreamForwarder:
             return b""
 
     async def _receive_control_ws(self, ws):
-        """Receives binary Scrcpy control messages from the browser WebSocket and writes to scrcpy control socket."""
+        """Receives binary Scrcpy control messages from the browser WebSocket and writes to scrcpy control socket with local ADB fallback."""
         async for msg in ws:
-            if msg.type == aiohttp.WSMsgType.BINARY:
+            if msg.type == aiohttp.WSMsgType.BINARY and msg.data:
+                data = msg.data
+                handled = False
+                
+                # Check for Touch Event (0x02, >=32 bytes)
+                if len(data) >= 32 and data[0] == 0x02:
+                    action = data[1]
+                    x, y = struct.unpack('>II', data[10:18])
+                    w, h = struct.unpack('>HH', data[18:22])
+                    if action == 0:
+                        logger.info(f"[SCRCPY_TOUCH_EXEC] Remote Tap at ({x}, {y}) [Stream: {w}x{h}, Device: {self.device_width}x{self.device_height}]")
+                elif len(data) >= 14 and data[0] == 0x00:
+                    action = data[1]
+                    keycode = struct.unpack('>I', data[2:6])[0]
+                    if action == 0:
+                        logger.info(f"[SCRCPY_KEY_EXEC] Remote Keyevent {keycode}")
+
                 if self.control_socket:
                     try:
                         self.control_socket.setblocking(True)
-                        self.control_socket.sendall(msg.data)
-                        logger.debug(f"[CONTROL_COMMAND_SENT] Wrote {len(msg.data)} bytes to scrcpy control socket")
+                        self.control_socket.sendall(data)
+                        handled = True
                     except Exception as e:
-                        logger.debug(f"Control packet write error: {e}")
+                        logger.debug(f"Scrcpy control socket write notice: {e}")
+
+                # Immediate ADB Fallback if control socket was closed/busy
+                if not handled:
+                    if len(data) >= 32 and data[0] == 0x02 and data[1] == 0:
+                        x, y = struct.unpack('>II', data[10:18])
+                        try:
+                            subprocess.run(["adb", "shell", f"input tap {x} {y}"], capture_output=True, timeout=2)
+                            logger.info(f"[ADB_FALLBACK_TOUCH] Executed adb shell input tap {x} {y}")
+                        except Exception:
+                            pass
+                    elif len(data) >= 14 and data[0] == 0x00 and data[1] == 0:
+                        keycode = struct.unpack('>I', data[2:6])[0]
+                        try:
+                            subprocess.run(["adb", "shell", f"input keyevent {keycode}"], capture_output=True, timeout=2)
+                            logger.info(f"[ADB_FALLBACK_KEY] Executed adb shell input keyevent {keycode}")
+                        except Exception:
+                            pass
+
             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                 break

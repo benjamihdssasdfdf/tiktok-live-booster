@@ -250,16 +250,21 @@ class TikTokBoosterOrchestrator:
         if not self.adb.ensure_app_installed():
             logger.warning("TikTok package is not installed. Proceeding with browser fallback.")
 
-        # 5. Account Assignment from Google Sheets
-        assigned_accounts = self.sheet_service.get_assigned_accounts_for_runner()
-        if not assigned_accounts:
-            logger.info("No dedicated account assigned. Running in Guest Viewer mode.")
-            self._run_stream_session(account=None)
+        # 5. Dynamic Account Assignment & In-App Authentication
+        account = self._fetch_assigned_account()
+        if account:
+            acc_name = account.get("username") or account.get("email")
+            logger.info(f"[+] Assigned TikTok Account: {acc_name} (ID #{account.get('id')})")
+            
+            def auth_callback(phase_name: str, phase_reason: str):
+                self.transition_state(RunnerState.APP_STARTED, reason=f"{phase_name}: {phase_reason}")
+                self.send_heartbeat(include_screenshot=True, reason=f"{phase_name}: {phase_reason}")
+
+            self.auto_login.authenticate_account(account, state_callback=auth_callback)
+            self._run_stream_session(account=account)
         else:
-            for acc in assigned_accounts:
-                if not self.is_running:
-                    break
-                self._run_stream_session(account=acc)
+            logger.info("No dedicated account assigned in backend. Running in Guest Viewer mode.")
+            self._run_stream_session(account=None)
 
         # 6. Session Finished
         self.transition_state(RunnerState.STOPPED, reason="Session duration completed cleanly")
@@ -267,15 +272,31 @@ class TikTokBoosterOrchestrator:
         self._notify_stop()
         logger.info(f"Milestone 1 Session Finished! Total likes: {self.total_likes_sent}")
 
+    def _fetch_assigned_account(self) -> dict:
+        """Fetches assigned TikTok account with decrypted secrets from central backend."""
+        try:
+            url = f"{self.config.backend_url}/api/accounts/runner-assignment/{self.runner_key}"
+            res = requests.get(url, headers={"Authorization": f"Bearer runner_token"}, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("has_account") and data.get("account"):
+                    return data.get("account")
+        except Exception as e:
+            logger.debug(f"Backend account assignment fetch note: {e}")
+        return None
+
     def _run_stream_session(self, account=None):
-        acc_label = f"[{account.username}]" if account and account.username else "[Guest-Viewer]"
+        acc_label = f"[{account.get('username')}]" if account and isinstance(account, dict) and account.get('username') else (f"[{account.username}]" if account and hasattr(account, 'username') else "[Guest-Viewer]")
         logger.info(f"=== Starting Session for {acc_label} ===")
 
         # 1. Identity & Proxy
-        if account and account.device_id:
+        if account and isinstance(account, dict):
+            if account.get("device_id"):
+                self.adb.set_persistent_device_identity(account.get("device_id"))
+            if account.get("proxy"):
+                self.adb.configure_proxy(account.get("proxy"))
+        elif account and hasattr(account, 'device_id') and account.device_id:
             self.adb.set_persistent_device_identity(account.device_id)
-        if account and account.proxy:
-            self.adb.configure_proxy(account.proxy)
 
         # 2. Launch Target Stream
         self.transition_state(RunnerState.TARGET_OPENING, reason=f"Opening target live stream room: {self.config.stream_url}")
