@@ -54,22 +54,23 @@ class TikTokBoosterOrchestrator:
     def _handle_exit(self, signum, frame):
         logger.warning("Shutdown signal received. Exiting gracefully...")
         self.is_running = False
-        self.transition_state(RunnerState.STOPPING)
+        self.transition_state(RunnerState.STOPPING, reason="SIGINT/SIGTERM shutdown signal received")
         self.stream_forwarder.stop()
         self.send_heartbeat()
         self._notify_stop()
 
-    def transition_state(self, new_state: RunnerState):
+    def transition_state(self, new_state: RunnerState, reason: str = ""):
         """Logs deterministic state transition and immediately transmits high-speed telemetry update to backend."""
         if self.current_state != new_state:
             self.previous_state = self.current_state
             self.current_state = new_state
             ts = datetime.utcnow().isoformat() + "Z"
-            logger.info(f"[STATE_TRANSITION] runner={self.runner_key} session={self.session_uuid} previous={self.previous_state.value} new={self.current_state.value} timestamp={ts}")
+            self.current_reason = reason or f"Transitioned to {new_state.value}"
+            logger.info(f"[STATE_TRANSITION] runner={self.runner_key} session={self.session_uuid} previous={self.previous_state.value} new={self.current_state.value} reason='{self.current_reason}' timestamp={ts}")
             
             # Immediately notify central backend (fast sub-50ms transmission without taking heavy screenshot)
             try:
-                self.send_heartbeat(include_screenshot=False)
+                self.send_heartbeat(include_screenshot=False, reason=self.current_reason)
             except Exception as e:
                 logger.debug(f"Immediate state transition heartbeat notice: {e}")
 
@@ -102,7 +103,7 @@ class TikTokBoosterOrchestrator:
             logger.debug(f"Registration fallback note: {e}")
         return False
 
-    def send_heartbeat(self, include_screenshot=False) -> list:
+    def send_heartbeat(self, include_screenshot=False, reason: str = "") -> list:
         """Transmits state heartbeat to PostgreSQL and retrieves pending control commands."""
         url = f"{self.config.backend_url}/api/telemetry/heartbeat"
         screenshot_b64 = None
@@ -120,6 +121,7 @@ class TikTokBoosterOrchestrator:
             "account": "Active Live Session",
             "status": self.current_state.value,
             "state": self.current_state.value,
+            "reason": reason or getattr(self, 'current_reason', f"State: {self.current_state.value}"),
             "likes_sent": self.total_likes_sent,
             "elapsed_seconds": elapsed,
             "screenshot_b64": screenshot_b64,
@@ -219,32 +221,32 @@ class TikTokBoosterOrchestrator:
         logger.info(f"Runner Key: {self.runner_key} | Session UUID: {self.session_uuid}")
         logger.info(f"Target Stream: {self.config.stream_url or self.config.stream_user or self.config.room_id}")
 
-        self.transition_state(RunnerState.INITIALIZING)
+        self.transition_state(RunnerState.INITIALIZING, reason="Runner process spawned; reading runtime configuration")
 
         # 1. VPN Setup
         if self.config.vpn_provider != "none":
             self.vpn.setup_vpn()
 
         # 2. ADB & Android 14 Connectivity
-        self.transition_state(RunnerState.ADB_CONNECTING)
+        self.transition_state(RunnerState.ADB_CONNECTING, reason="Establishing ADB connection to Android 14 AVD")
         if not self.adb.check_connection():
             logger.error("ADB connection failed!")
-            self.transition_state(RunnerState.ERROR)
+            self.transition_state(RunnerState.ERROR, reason="ADB connection failed to reach device")
             sys.exit(1)
 
-        self.transition_state(RunnerState.ADB_CONNECTED)
-        self.transition_state(RunnerState.ANDROID_READY)
+        self.transition_state(RunnerState.ADB_CONNECTED, reason="ADB connected and authorized")
+        self.transition_state(RunnerState.ANDROID_READY, reason=f"Android 14 system boot completed (API {self.adb.sdk_level})")
 
         # 3. Register in PostgreSQL & Start Real-Time Scrcpy Stream Forwarder
         self.register_runner()
         self.stream_forwarder.start_background()
         self.stream_forwarder.wait_until_connected(timeout=2.0)
-        self.send_heartbeat(include_screenshot=True)
+        self.send_heartbeat(include_screenshot=True, reason="Scrcpy forwarder connected; initial screen snapshot taken")
 
         self.adb.wake_and_unlock()
 
         # 4. App Installation Verification
-        self.transition_state(RunnerState.APP_STARTING)
+        self.transition_state(RunnerState.APP_STARTING, reason="Verifying TikTok APK installation and launching app")
         if not self.adb.ensure_app_installed():
             logger.warning("TikTok package is not installed. Proceeding with browser fallback.")
 
@@ -260,8 +262,8 @@ class TikTokBoosterOrchestrator:
                 self._run_stream_session(account=acc)
 
         # 6. Session Finished
-        self.transition_state(RunnerState.STOPPED)
-        self.send_heartbeat(include_screenshot=True)
+        self.transition_state(RunnerState.STOPPED, reason="Session duration completed cleanly")
+        self.send_heartbeat(include_screenshot=True, reason="Final session completion heartbeat")
         self._notify_stop()
         logger.info(f"Milestone 1 Session Finished! Total likes: {self.total_likes_sent}")
 
@@ -276,7 +278,7 @@ class TikTokBoosterOrchestrator:
             self.adb.configure_proxy(account.proxy)
 
         # 2. Launch Target Stream
-        self.transition_state(RunnerState.TARGET_OPENING)
+        self.transition_state(RunnerState.TARGET_OPENING, reason=f"Opening target live stream room: {self.config.stream_url}")
         self.adb.launch_live_stream(
             stream_url=self.config.stream_url,
             room_id=self.config.room_id,
@@ -287,11 +289,11 @@ class TikTokBoosterOrchestrator:
         self.adb.dismiss_popups()
 
         if self.adb.is_live_stream_active():
-            self.transition_state(RunnerState.TARGET_VERIFIED)
+            self.transition_state(RunnerState.TARGET_VERIFIED, reason="TikTok Live stream player confirmed active")
         else:
-            self.transition_state(RunnerState.TARGET_OPENING)
+            self.transition_state(RunnerState.TARGET_OPENING, reason="Waiting for live player buffer to confirm active stream")
 
-        self.send_heartbeat(include_screenshot=True)
+        self.send_heartbeat(include_screenshot=True, reason="Live room loaded, starting auto-liker loop")
 
         duration_seconds = self.config.duration_minutes * 60
         start_time = time.time()
@@ -303,7 +305,7 @@ class TikTokBoosterOrchestrator:
         last_heartbeat_time = 0
         last_stream_reopen_time = time.time()
 
-        self.transition_state(RunnerState.RUNNING)
+        self.transition_state(RunnerState.RUNNING, reason=f"Auto-liker active at {self.config.likes_per_minute} likes/min target")
 
         while self.is_running and (time.time() - start_time) < duration_seconds:
             now = time.time()
@@ -311,14 +313,14 @@ class TikTokBoosterOrchestrator:
             # Auto-reconnect if stream dropped
             if now > getattr(self.adb, 'user_override_until', 0) and (now - last_stream_reopen_time) >= 20:
                 if not self.adb.is_live_stream_active():
-                    self.transition_state(RunnerState.RECOVERING)
+                    self.transition_state(RunnerState.RECOVERING, reason="Live player inactive; dismissing overlays and re-launching room")
                     self.adb.dismiss_popups()
                     if self.config.room_id:
                         self.adb.shell(f'am start -a android.intent.action.VIEW -d "snssdk1233://live?room_id={self.config.room_id}" {self.adb.package_name}')
                     elif self.config.stream_url:
                         self.adb.shell(f'am start -a android.intent.action.VIEW -d "{self.config.stream_url}" {self.adb.package_name}')
                 else:
-                    self.transition_state(RunnerState.RUNNING)
+                    self.transition_state(RunnerState.RUNNING, reason="Live player active and tapping")
                 last_stream_reopen_time = now
 
             # Execute Heart Likes Burst
