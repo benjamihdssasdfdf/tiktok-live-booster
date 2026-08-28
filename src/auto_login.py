@@ -21,9 +21,11 @@ from src.email_service import GmailVerificationService
 logger = logging.getLogger("AutoLoginManager")
 
 class AutoLoginManager:
-    def __init__(self, config: AppConfig, adb: ADBController):
+    def __init__(self, config: AppConfig, adb: ADBController, drive=None, sheet=None):
         self.config = config
         self.adb = adb
+        self.drive = drive
+        self.sheet = sheet
 
     def _generate_device_id(self, account_identifier: str) -> str:
         """Generates a deterministic 16-hex Android ID based on account name."""
