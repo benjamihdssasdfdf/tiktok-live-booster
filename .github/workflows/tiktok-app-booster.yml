@@ -1,0 +1,103 @@
+name: TikTok Mobile App Live Stream Multi-Viewer & Auto-Liker
+
+on:
+  workflow_dispatch:
+    inputs:
+      stream_url:
+        description: 'Target TikTok Live Stream URL, @username, or Room ID'
+        required: true
+        default: 'https://www.tiktok.com/@tiktok/live'
+      duration_minutes:
+        description: 'Watch duration per instance in minutes (e.g. 30, 60, 180)'
+        required: true
+        default: '60'
+      likes_per_minute:
+        description: 'Heart likes tapping rate per minute (e.g. 60, 120, 240)'
+        required: true
+        default: '120'
+      runner_count:
+        description: 'Number of parallel Android AVD runners to launch per account (1 to 20)'
+        required: false
+        default: '5'
+      vpn_provider:
+        description: 'VPN Provider (none, nordvpn, pia)'
+        required: false
+        default: 'none'
+
+jobs:
+  launch-mobile-viewers:
+    name: Milestone 1 Android 14 Runner #${{ matrix.runner_id }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner_id: [0]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Enable KVM Hardware Acceleration
+        run: |
+          echo '=== Checking KVM Availability ==='
+          if [ -e /dev/kvm ]; then
+            sudo chmod 777 /dev/kvm
+            echo "KVM is enabled and accessible"
+          fi
+
+      - name: Set up Android SDK & Gradle Cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-34-x86_64-v2
+
+      - name: Make Scripts Executable
+        run: chmod +x ./scripts/*.sh
+
+      - name: Create AVD & Run Android 14 Automation
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          avd-name: TikTok_Booster_14_${{ matrix.runner_id }}
+          force-avd-creation: false
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -camera-back none
+          disable-animations: true
+          script: ./scripts/run_emulator_session.sh
+        env:
+          RUNNER_INDEX: ${{ matrix.runner_id }}
+          STREAM_URL: ${{ github.event.inputs.stream_url }}
+          DURATION_MIN: ${{ github.event.inputs.duration_minutes }}
+          LIKES_RATE: ${{ github.event.inputs.likes_per_minute }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SHEET_NAME: ${{ secrets.GOOGLE_SHEET_NAME || 'Accounts' }}
+          GOOGLE_SHEET_CSV_URL: ${{ secrets.GOOGLE_SHEET_CSV_URL }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          VPN_PROVIDER: ${{ github.event.inputs.vpn_provider }}
+          VPN_TOKEN: ${{ secrets.VPN_TOKEN }}
+          TIKTOK_APK_URL: ${{ secrets.TIKTOK_APK_URL || 'https://d.apkpure.net/b/APK/com.zhiliaoapp.musically?version=latest' }}
+          TIKTOK_BOOSTER_BACKEND_URL: ${{ secrets.TIKTOK_BOOSTER_BACKEND_URL || secrets.FGOS_BACKEND_URL || 'https://api.fgos.site/tiktok' }}
+          FGOS_BACKEND_URL: ${{ secrets.FGOS_BACKEND_URL || 'https://api.fgos.site/tiktok' }}
+
+      - name: Upload Stream Verification Snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stream-snapshot-runner-${{ matrix.runner_id }}
+          path: last_stream_view.png
+          if-no-files-found: ignore

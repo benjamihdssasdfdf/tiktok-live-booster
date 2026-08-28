@@ -1,0 +1,18 @@
+[
+  {
+    "id": "1",
+    "username": "tiktok_account_1",
+    "password": "Password123!",
+    "cookies_raw": "sessionid_example_token_1",
+    "proxy": "http://user:pass@127.0.0.1:8080",
+    "status": "Idle"
+  },
+  {
+    "id": "2",
+    "username": "tiktok_account_2",
+    "password": "Password123!",
+    "cookies_raw": "sessionid_example_token_2",
+    "proxy": "http://user:pass@127.0.0.1:8081",
+    "status": "Idle"
+  }
+]
