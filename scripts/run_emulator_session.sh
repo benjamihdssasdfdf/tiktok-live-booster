@@ -5,12 +5,16 @@
 set -e
 
 echo "=== [1/4] Android 14 Boot & Version Verification ==="
+chmod +x ./scripts/*.sh 2>/dev/null || true
 adb devices
-SDK_VER=$(adb shell getprop ro.build.version.sdk | tr -d '\r')
-REL_VER=$(adb shell getprop ro.build.version.release | tr -d '\r')
-BOOT_DONE=$(adb shell getprop sys.boot_completed | tr -d '\r')
-WM_SIZE=$(adb shell wm size | tr -d '\r')
-WM_DENSITY=$(adb shell wm density | tr -d '\r')
+export ANDROID_SERIAL=$(adb devices | grep -m 1 'emulator-' | awk '{print $1}')
+echo "Using Android Device: ${ANDROID_SERIAL:-default}"
+
+SDK_VER=$(adb shell getprop ro.build.version.sdk 2>/dev/null | tr -d '\r')
+REL_VER=$(adb shell getprop ro.build.version.release 2>/dev/null | tr -d '\r')
+BOOT_DONE=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+WM_SIZE=$(adb shell wm size 2>/dev/null | tr -d '\r')
+WM_DENSITY=$(adb shell wm density 2>/dev/null | tr -d '\r')
 
 echo "=================================================="
 echo "SDK Version:      $SDK_VER"
@@ -28,16 +32,20 @@ echo "[PASS] Android 14 (API 34) verified successfully!"
 
 # 2. Fast Tap script
 echo "=== [2/4] Setting Up Fast Tap Acceleration Script ==="
-chmod +x ./scripts/fast_tap.sh
-adb push ./scripts/fast_tap.sh /data/local/tmp/fast_tap.sh
-adb shell chmod +x /data/local/tmp/fast_tap.sh
-echo "[PASS] fast_tap.sh installed on device."
+if [ -f "./scripts/fast_tap.sh" ]; then
+    chmod +x ./scripts/fast_tap.sh
+    adb push ./scripts/fast_tap.sh /data/local/tmp/fast_tap.sh
+    adb shell chmod +x /data/local/tmp/fast_tap.sh
+    echo "[PASS] fast_tap.sh installed on device."
+fi
 
 # 3. Setup & Launch Official Scrcpy v2.4 Server
 echo "=== [3/4] Setting Up Official Scrcpy v2.4 Server ==="
-chmod +x ./scripts/setup_scrcpy.sh
-./scripts/setup_scrcpy.sh
-echo "[PASS] scrcpy-server v2.4 launched on port 27183."
+if [ -f "./scripts/setup_scrcpy.sh" ]; then
+    chmod +x ./scripts/setup_scrcpy.sh
+    ./scripts/setup_scrcpy.sh
+    echo "[PASS] scrcpy-server v2.4 launched on port 27183."
+fi
 
 # 4. Run TikTok Booster Python Orchestrator
 echo "=== [4/4] Starting TikTok Booster Orchestrator ==="
