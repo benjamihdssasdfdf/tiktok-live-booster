@@ -1,6 +1,7 @@
 """
 TikTok Booster - Automated In-App Authentication & Onboarding Engine
 Deterministic, instrumented login state machine supporting:
+- Session Cleanup to guarantee genuine credential login
 - Persistent Hardware Identity
 - Native In-App Email & Password Entry
 - Automated Gmail IMAP 2FA Code Extraction
@@ -56,46 +57,53 @@ class AutoLoginManager:
                 except Exception:
                     pass
 
-        # 1. Device Hardware Identity
+        # 1. Guarantee a completely fresh, logged-out session for credential login testing
+        logger.info(f"Clearing existing application data and authentication state for {self.adb.package_name}...")
+        self.adb.shell(f"pm clear {self.adb.package_name}")
+        time.sleep(2)
+
+        # 2. Device Hardware Identity
         device_id = account.get("device_id") or self._generate_device_id(username)
         self.adb.set_persistent_device_identity(device_id)
 
-        # 2. Configure Proxy if assigned
+        # 3. Configure Proxy if assigned
         if account.get("proxy"):
             self.adb.configure_proxy(account.get("proxy"))
 
-        # 3. Cookie / Session Token Injection (if present)
-        if account.get("cookies_raw"):
-            self._inject_session_cookies(account.get("cookies_raw"))
-
-        # 4. Launch TikTok Application
-        report("TIKTOK_LAUNCHING", "Starting TikTok native Android activity")
+        # 4. Launch clean TikTok Application
+        report("TIKTOK_LAUNCHING", "Starting clean TikTok native Android activity")
         self.adb.shell(f"am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p {self.adb.package_name}")
-        time.sleep(5)
-        self.adb.dismiss_popups()
+        time.sleep(6)
 
         width = self.adb.screen_width or 1080
         height = self.adb.screen_height or 2400
 
-        # Check if already authenticated
-        if not self._is_login_screen_active():
-            logger.info(f"[+] Account {masked_acc} already authenticated!")
-            report("TIKTOK_AUTHENTICATED", "Active user session found in application")
-            report("LIVE_BROWSING_READY", "Application ready for live stream navigation")
-            return True
+        # 5. Dismiss initial onboarding prompts (Terms, Interests, Start Watching)
+        if self.adb.click_element(text="Agree and continue") or self.adb.click_element(text="Agree"):
+            time.sleep(1.5)
+        if self.adb.click_element(text="Skip") or self.adb.click_element(text="Choose your interests"):
+            time.sleep(1.5)
+        if self.adb.click_element(text="Start watching"):
+            time.sleep(1.5)
+        self.adb.dismiss_popups()
 
         if not password:
             logger.info(f"No password provided for {masked_acc}. Proceeding in Guest / Read-Only mode.")
             report("LIVE_BROWSING_READY", "Running as Guest Viewer")
             return True
 
-        # 5. Switch to Login Screen
+        # 6. Navigate to Login Screen
         report("LOGIN_REQUIRED", "Authentication required; navigating to Email login tab")
         time.sleep(1)
 
+        # Tap Profile tab in bottom right
+        if not (self.adb.click_element(text="Profile") or self.adb.click_element(text="Me")):
+            self.adb.shell(f"input tap {int(width * 0.90)} {int(height * 0.96)}")
+        time.sleep(2)
+
         # Check if screen is in Sign-up mode and click "Log in" link
         if self.adb.click_element(text="Already have an account") or self.adb.click_element(text="Log in"):
-            logger.info("Navigated to Log-in screen.")
+            logger.info("Clicked 'Log in' link on signup screen.")
             time.sleep(2)
 
         # Tap 'Use phone / email / username' option
@@ -137,7 +145,7 @@ class AutoLoginManager:
             self.adb.shell(f"input tap {width // 2} {int(height * 0.34)}")
         time.sleep(5)
 
-        # 6. Check for CAPTCHA / Puzzle Challenge
+        # 7. Check for CAPTCHA / Puzzle Challenge
         win_info = self.adb.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'").lower()
         if any(c in win_info for c in ["captcha", "sec_captcha", "puzzle", "challenge", "two_step"]):
             logger.warning(f"[Challenge Detected] TikTok presented security challenge: {win_info.strip()}")
@@ -148,29 +156,41 @@ class AutoLoginManager:
                 if not self._is_login_screen_active():
                     break
 
-        # 7. Check for 2FA / Verification Code Screen
+        # 8. Check for 2FA / Email Verification Code Screen
         win_info = self.adb.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'").lower()
         ui_dump = (self.adb.dump_ui_hierarchy() or "").lower()
-        if "verification" in win_info or "verify" in win_info or "enter 6-digit code" in ui_dump or "digit code" in ui_dump:
-            report("VERIFICATION_REQUIRED", "Email verification code required")
+        if "verification" in win_info or "verify" in win_info or "enter 6-digit code" in ui_dump or "digit code" in ui_dump or "code" in win_info:
+            report("VERIFICATION_REQUIRED", "Email verification code requested by TikTok")
             if gmail_addr and gmail_pwd:
+                logger.info(f"Connecting to Gmail IMAP for account {gmail_addr}...")
                 email_srv = GmailVerificationService(gmail_addr, gmail_pwd)
-                code = email_srv.fetch_tiktok_verification_code(timeout_seconds=40)
+                code = email_srv.fetch_tiktok_verification_code(timeout_seconds=45)
                 if code:
-                    logger.info(f"Typing verification code into TikTok input...")
+                    logger.info(f"Typing retrieved verification code '{code}' into TikTok verification input...")
                     self.adb.shell(f"input text {code}")
+                    time.sleep(2)
                     report("VERIFICATION_SUBMITTED", f"Submitted code {code[:2]}****")
                     time.sleep(4)
+                else:
+                    logger.warning("No verification code received from Gmail IMAP within timeout.")
+                    report("LOGIN_REQUIRES_USER_ACTION", "2FA code timeout. Please enter code manually.")
             else:
                 report("LOGIN_REQUIRES_USER_ACTION", "2FA code required. Please enter code on Live Screen.")
-                time.sleep(20)
+                time.sleep(15)
 
-        # 8. Post-Login Authoritative UI Validation
+        # 9. Post-Login Authoritative UI Validation
         self.adb.dismiss_popups()
         time.sleep(2)
 
+        # Dismiss post-login prompts: "Save login info", "Allow notifications", "Sync contacts"
+        if self.adb.click_element(text="Save") or self.adb.click_element(text="Not now"):
+            time.sleep(1)
+        if self.adb.click_element(text="Don't allow") or self.adb.click_element(text="Deny"):
+            time.sleep(1)
+
+        # Verify that we are on home feed / live viewer / profile and NOT on login activity
         if not self._is_login_screen_active():
-            logger.info(f"[+] [AUTH SUCCESS] Account {masked_acc} authenticated successfully!")
+            logger.info(f"[+] [AUTH SUCCESS] Account {masked_acc} authenticated successfully into native app!")
             report("TIKTOK_AUTHENTICATED", "User authenticated into main feed")
             report("LIVE_BROWSING_READY", "Ready for live stream viewer")
             return True
@@ -190,18 +210,3 @@ class AutoLoginManager:
             "authorizeactivity"
         ]
         return any(ind in act for ind in login_indicators)
-
-    def _inject_session_cookies(self, cookies_raw: str) -> None:
-        """Injects session token into TikTok Android shared preferences."""
-        if not cookies_raw or len(cookies_raw.strip()) < 10:
-            return
-        session_val = cookies_raw.strip()
-        xml_content = f'''<?xml version=\'1.0\' encoding=\'utf-8\' standalone=\'yes\' ?>
-<map>
-    <string name="session_key">{session_val}</string>
-    <string name="sessionid">{session_val}</string>
-</map>'''
-        device_xml = "/sdcard/aweme_user.xml"
-        self.adb.shell(f"echo '{xml_content}' > {device_xml}")
-        self.adb.shell(f"mkdir -p /data/data/{self.adb.package_name}/shared_prefs")
-        self.adb.shell(f"cp {device_xml} /data/data/{self.adb.package_name}/shared_prefs/aweme_user.xml 2>/dev/null || true")
