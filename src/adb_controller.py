@@ -461,10 +461,10 @@ class ADBController:
             logger.debug(f"uiautomator dump notice: {e}")
         return ""
 
-    def find_element(self, text: Optional[str] = None, content_desc: Optional[str] = None, resource_id: Optional[str] = None) -> Optional[Tuple[int, int]]:
+    def find_element(self, text: Optional[str] = None, content_desc: Optional[str] = None, resource_id: Optional[str] = None, must_be_clickable: bool = False) -> Optional[Tuple[int, int]]:
         """
         Parses the current UI hierarchy XML to find an element matching text, content-desc, or resource-id.
-        Prioritizes exact matches before falling back to partial substring matches.
+        Prioritizes exact clickable/button matches over non-clickable static header titles.
         Returns the center coordinates (x, y) if found, or None.
         """
         xml_str = self.dump_ui_hierarchy()
@@ -477,7 +477,37 @@ class ADBController:
             
             nodes = list(root.iter('node'))
 
-            # Pass 1: Exact matches
+            def parse_bounds(b_str):
+                m = re.findall(r'\[(\d+),(\d+)\]', b_str)
+                if len(m) == 2:
+                    x1, y1 = int(m[0][0]), int(m[0][1])
+                    x2, y2 = int(m[1][0]), int(m[1][1])
+                    return ((x1 + x2) // 2, (y1 + y2) // 2), y1
+                return None, 0
+
+            # Pass 1: Exact matches on CLICKABLE or BUTTON elements (avoiding static top headers y < 180)
+            for node in nodes:
+                node_text = node.attrib.get('text', '')
+                node_desc = node.attrib.get('content-desc', '')
+                node_id = node.attrib.get('resource-id', '')
+                bounds_str = node.attrib.get('bounds', '')
+                is_clickable = node.attrib.get('clickable', 'false') == 'true' or 'button' in node.attrib.get('class', '').lower() or 'edittext' in node.attrib.get('class', '').lower()
+
+                matched = False
+                if text and (text.lower() == node_text.lower() or text.lower() == node_desc.lower()):
+                    matched = True
+                elif content_desc and (content_desc.lower() == node_desc.lower() or content_desc.lower() == node_text.lower()):
+                    matched = True
+                elif resource_id and resource_id.lower() == node_id.lower():
+                    matched = True
+
+                if matched and bounds_str:
+                    coords, top_y = parse_bounds(bounds_str)
+                    # If this is an action button ("Log in", "Next"), prioritize clickable element below header (y >= 180)
+                    if coords and (is_clickable or top_y >= 180):
+                        return coords
+
+            # Pass 2: Any exact match
             for node in nodes:
                 node_text = node.attrib.get('text', '')
                 node_desc = node.attrib.get('content-desc', '')
@@ -493,13 +523,11 @@ class ADBController:
                     matched = True
 
                 if matched and bounds_str:
-                    m = re.findall(r'\[(\d+),(\d+)\]', bounds_str)
-                    if len(m) == 2:
-                        x1, y1 = int(m[0][0]), int(m[0][1])
-                        x2, y2 = int(m[1][0]), int(m[1][1])
-                        return ((x1 + x2) // 2, (y1 + y2) // 2)
+                    coords, _ = parse_bounds(bounds_str)
+                    if coords:
+                        return coords
 
-            # Pass 2: Substring matches
+            # Pass 3: Substring matches (below top header y >= 180)
             for node in nodes:
                 node_text = node.attrib.get('text', '')
                 node_desc = node.attrib.get('content-desc', '')
@@ -515,11 +543,9 @@ class ADBController:
                     matched = True
 
                 if matched and bounds_str:
-                    m = re.findall(r'\[(\d+),(\d+)\]', bounds_str)
-                    if len(m) == 2:
-                        x1, y1 = int(m[0][0]), int(m[0][1])
-                        x2, y2 = int(m[1][0]), int(m[1][1])
-                        return ((x1 + x2) // 2, (y1 + y2) // 2)
+                    coords, top_y = parse_bounds(bounds_str)
+                    if coords and top_y >= 180:
+                        return coords
         except Exception as e:
             logger.debug(f"Element parse error: {e}")
         return None
