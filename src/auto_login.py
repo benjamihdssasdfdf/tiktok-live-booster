@@ -143,18 +143,23 @@ class AutoLoginManager:
         self.adb.hide_keyboard()
         time.sleep(1)
 
+        # Click the red "Continue" / "Next" button at the bottom of the Email step
+        logger.info("Clicking 'Continue' / 'Next' button...")
+        if not (self.adb.click_element(text="Continue") or 
+                self.adb.click_element(text="Next") or 
+                self.adb.click_element(text="Log in") or 
+                self.adb.click_element(resource_id="login_btn")):
+            self.adb.shell(f"input tap {width // 2} {int(height * 0.94)}")
+        time.sleep(3)
+
         # Focus Password field & type password
         logger.info("Entering password into input field...")
         report("LOGIN_SUBMITTING", "Submitting account credentials to TikTok")
         
-        # Tap Next if two-step form, or tap Password field
-        if self.adb.click_element(text="Next"):
-            time.sleep(2)
-        
         if not (self.adb.click_element(text="Password") or 
                 self.adb.click_element(text="Enter password") or 
                 self.adb.click_element(resource_id="password_input")):
-            self.adb.shell(f"input tap {width // 2} {int(height * 0.24)}")
+            self.adb.shell(f"input tap {width // 2} {int(height * 0.20)}")
         time.sleep(1)
 
         escaped_pwd = password.replace(" ", "%s").replace("&", "\&").strip()
@@ -163,12 +168,13 @@ class AutoLoginManager:
         self.adb.hide_keyboard()
         time.sleep(1)
 
-        # Click 'Log in' button (now unobstructed by soft keyboard)
+        # Click the red 'Log in' / 'Continue' submit button at the bottom of Password step
         logger.info("Clicking 'Log in' submit button...")
         if not (self.adb.click_element(text="Log in") or 
+                self.adb.click_element(text="Continue") or 
                 self.adb.click_element(resource_id="login_btn") or
                 self.adb.click_element(resource_id="btn_login")):
-            self.adb.shell(f"input tap {width // 2} {int(height * 0.34)}")
+            self.adb.shell(f"input tap {width // 2} {int(height * 0.94)}")
         time.sleep(4)
 
         # 7. Post-Submission Outcome Evaluation Loop (Up to 35s)
@@ -178,6 +184,7 @@ class AutoLoginManager:
         while time.time() - outcome_start < 35:
             ui_content = self.adb.get_ui_text_content().lower()
             logger.info(f"[Auth Monitor] Active UI elements summary: {ui_content[:100]}...")
+            report("LOGIN_SUBMITTING", "Evaluating authentication response...")
 
             # Outcome A: Authenticated TikTok feed/profile is visible
             if self.adb.is_authenticated_user_feed():
