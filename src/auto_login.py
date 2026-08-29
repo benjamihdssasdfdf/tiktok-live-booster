@@ -150,34 +150,57 @@ class AutoLoginManager:
                 self.adb.click_element(text="Log in") or 
                 self.adb.click_element(resource_id="login_btn")):
             self.adb.shell(f"input tap {width // 2} {int(height * 0.94)}")
-        time.sleep(3)
-
-        # Focus Password field & type password
-        logger.info("Entering password into input field...")
-        report("LOGIN_SUBMITTING", "Submitting account credentials to TikTok")
         
-        if not (self.adb.click_element(text="Password") or 
-                self.adb.click_element(text="Enter password") or 
-                self.adb.click_element(resource_id="password_input")):
-            self.adb.shell(f"input tap {width // 2} {int(height * 0.20)}")
-        time.sleep(1)
+        # Wait up to 10 seconds for Password screen or 2FA challenge to appear
+        logger.info("Waiting for password or verification screen after email submission...")
+        password_entered = False
+        wait_start = time.time()
+        
+        while time.time() - wait_start < 10:
+            ui_content = self.adb.get_ui_text_content().lower()
+            
+            # Check if "Log in with password" switch is present
+            if "log in with password" in ui_content:
+                logger.info("Clicking 'Log in with password' switch...")
+                self.adb.click_element(text="Log in with password")
+                time.sleep(2)
+                ui_content = self.adb.get_ui_text_content().lower()
 
-        escaped_pwd = password.replace(" ", "%s").replace("&", "\&").strip()
-        self.adb.shell(f"input text {escaped_pwd}")
-        time.sleep(1)
-        self.adb.hide_keyboard()
-        time.sleep(1)
+            # Check if Password field is present
+            if "password" in ui_content or "enter password" in ui_content:
+                logger.info("Password screen detected. Entering password...")
+                report("LOGIN_SUBMITTING", "Submitting account credentials to TikTok")
+                
+                if not (self.adb.click_element(text="Enter password") or 
+                        self.adb.click_element(text="Password") or 
+                        self.adb.click_element(resource_id="password_input")):
+                    self.adb.shell(f"input tap {width // 2} {int(height * 0.20)}")
+                time.sleep(1)
 
-        # Click the red 'Log in' / 'Continue' submit button at the bottom of Password step
-        logger.info("Clicking 'Log in' submit button...")
-        if not (self.adb.click_element(text="Log in") or 
-                self.adb.click_element(text="Continue") or 
-                self.adb.click_element(resource_id="login_btn") or
-                self.adb.click_element(resource_id="btn_login")):
-            self.adb.shell(f"input tap {width // 2} {int(height * 0.94)}")
-        time.sleep(4)
+                escaped_pwd = password.replace(" ", "%s").replace("&", "\&").strip()
+                self.adb.shell(f"input text {escaped_pwd}")
+                time.sleep(1)
+                self.adb.hide_keyboard()
+                time.sleep(1)
 
-        # 7. Post-Submission Outcome Evaluation Loop (Up to 35s)
+                # Click the red 'Log in' / 'Continue' submit button at bottom of Password step
+                logger.info("Clicking 'Log in' submit button...")
+                if not (self.adb.click_element(text="Log in") or 
+                        self.adb.click_element(text="Continue") or 
+                        self.adb.click_element(resource_id="login_btn") or
+                        self.adb.click_element(resource_id="btn_login")):
+                    self.adb.shell(f"input tap {width // 2} {int(height * 0.94)}")
+                time.sleep(4)
+                password_entered = True
+                break
+
+            # If 2FA or Authenticated feed appeared directly, break to outcome loop
+            if any(k in ui_content for k in ["enter 6-digit code", "verification code", "following", "for you", "home"]):
+                break
+
+            time.sleep(2)
+
+        # 7. Post-Submission Outcome Evaluation Loop (Up to 40s)
         logger.info("Evaluating login submission outcome...")
         outcome_start = time.time()
         
