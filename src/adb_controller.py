@@ -170,6 +170,11 @@ class ADBController:
         end_y = int(self.screen_height * 0.2)
         self.shell(f"input swipe {mid_x} {start_y} {mid_x} {end_y} 200")
 
+    def hide_keyboard(self) -> None:
+        """Hides Android software keyboard (IME) so UI buttons and fields are not obscured."""
+        self.shell("input keyevent 111")  # KEYCODE_ESCAPE
+        time.sleep(0.4)
+
     def configure_proxy(self, proxy_str: Optional[str]) -> None:
         """Configures system HTTP proxy on Android via ADB settings."""
         if not proxy_str or not proxy_str.strip():

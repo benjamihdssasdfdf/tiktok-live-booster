@@ -3,7 +3,7 @@ TikTok Booster - Automated In-App Authentication & Onboarding Engine
 Deterministic, instrumented login state machine supporting:
 - Clean session reset (pm clear)
 - Native UI Hierarchy element locating & clicking
-- In-App Email & Password Entry
+- In-App Email & Password Entry with soft keyboard auto-dismissal
 - Automated Gmail IMAP 2FA Code Extraction
 - CAPTCHA / Puzzle Challenge Detection (LOGIN_BLOCKED)
 - Authoritative Post-Auth UI Validation (LOGIN_SUCCESS vs LOGIN_FAILED)
@@ -38,7 +38,7 @@ class AutoLoginManager:
         1. Clean State (pm clear)
         2. Detect Login/Sign-up screen
         3. Click 'Use phone / email / username' -> 'Email / Username' tab
-        4. Enter username + password -> Submit
+        4. Enter username + password with keyboard auto-dismissal -> Submit
         5. Explicitly verify one of:
            A. Authenticated user feed -> AUTHENTICATED / LOGIN_SUCCESS
            B. Email 2FA -> 2FA_REQUIRED -> Gmail IMAP -> Submit -> Verify
@@ -87,8 +87,8 @@ class AutoLoginManager:
         width = self.adb.screen_width or 1080
         height = self.adb.screen_height or 2400
 
-        # 5. Dismiss initial onboarding prompts
-        self._dismiss_initial_onboarding()
+        # 5. Dismiss initial onboarding prompts (Terms, Interests, Swipe Up)
+        self._dismiss_initial_onboarding(width, height)
 
         if not password:
             logger.info(f"No password provided for {masked_acc}. Proceeding in Guest mode.")
@@ -98,10 +98,10 @@ class AutoLoginManager:
         # 6. Navigate into Login Screen
         report("LOGIN_REQUIRED", "Detecting login screen and navigating to Email login tab")
         
-        # Check if already on login screen, else tap Profile to trigger it
+        # Check if already on login screen, else tap Profile in bottom right
         if not self.adb.is_login_or_signup_screen():
-            logger.info("Opening Profile to trigger login prompt...")
-            if not (self.adb.click_element(text="Profile") or self.adb.click_element(text="Me")):
+            logger.info("Opening Profile tab to trigger login prompt...")
+            if not self.adb.click_element(text="Profile"):
                 self.adb.shell(f"input tap {int(width * 0.90)} {int(height * 0.96)}")
             time.sleep(3)
 
@@ -139,7 +139,9 @@ class AutoLoginManager:
 
         clean_user = username.replace(" ", "").strip()
         self.adb.shell(f"input text {clean_user}")
-        time.sleep(1.5)
+        time.sleep(1)
+        self.adb.hide_keyboard()
+        time.sleep(1)
 
         # Focus Password field & type password
         logger.info("Entering password into input field...")
@@ -157,20 +159,25 @@ class AutoLoginManager:
 
         escaped_pwd = password.replace(" ", "%s").replace("&", "\&").strip()
         self.adb.shell(f"input text {escaped_pwd}")
-        time.sleep(1.5)
+        time.sleep(1)
+        self.adb.hide_keyboard()
+        time.sleep(1)
 
-        # Click 'Log in' button
+        # Click 'Log in' button (now unobstructed by soft keyboard)
         logger.info("Clicking 'Log in' submit button...")
-        if not (self.adb.click_element(text="Log in") or self.adb.click_element(resource_id="login_btn")):
+        if not (self.adb.click_element(text="Log in") or 
+                self.adb.click_element(resource_id="login_btn") or
+                self.adb.click_element(resource_id="btn_login")):
             self.adb.shell(f"input tap {width // 2} {int(height * 0.34)}")
         time.sleep(4)
 
-        # 7. Post-Submission Outcome Evaluation Loop (Up to 30s)
+        # 7. Post-Submission Outcome Evaluation Loop (Up to 35s)
         logger.info("Evaluating login submission outcome...")
         outcome_start = time.time()
         
-        while time.time() - outcome_start < 30:
+        while time.time() - outcome_start < 35:
             ui_content = self.adb.get_ui_text_content().lower()
+            logger.info(f"[Auth Monitor] Active UI elements summary: {ui_content[:100]}...")
 
             # Outcome A: Authenticated TikTok feed/profile is visible
             if self.adb.is_authenticated_user_feed():
@@ -191,7 +198,9 @@ class AutoLoginManager:
                     if code:
                         logger.info(f"Typing retrieved verification code '{code[:2]}****' into TikTok...")
                         self.adb.shell(f"input text {code}")
-                        time.sleep(3)
+                        time.sleep(1)
+                        self.adb.hide_keyboard()
+                        time.sleep(2)
                         report("LOGIN_SUBMITTING", f"Submitted 2FA code {code[:2]}****")
                         time.sleep(4)
                         if self.adb.is_authenticated_user_feed():
@@ -211,7 +220,7 @@ class AutoLoginManager:
                     return False
 
             # Outcome C: Incorrect credentials error
-            if any(err_msg in ui_content for err_msg in ["incorrect password", "account doesn't exist", "maximum number of attempts", "wrong password"]):
+            if any(err_msg in ui_content for err_msg in ["incorrect password", "account doesn't exist", "maximum number of attempts", "wrong password", "too many attempts"]):
                 logger.error(f"[-] [LOGIN_FAILED] Invalid credentials reported by TikTok for {masked_acc}.")
                 report("LOGIN_FAILED", "Invalid credentials reported by TikTok")
                 self.adb.take_screenshot("login_failure_view.png")
@@ -244,14 +253,17 @@ class AutoLoginManager:
         self.adb.take_screenshot("login_failure_view.png")
         return False
 
-    def _dismiss_initial_onboarding(self) -> None:
-        """Dismisses splash, terms, and interest selection dialogs."""
+    def _dismiss_initial_onboarding(self, width: int = 1080, height: int = 2400) -> None:
+        """Dismisses splash, terms, interest selection, and tutorial swipe overlays."""
         if self.adb.click_element(text="Agree and continue") or self.adb.click_element(text="Agree"):
             time.sleep(1.5)
         if self.adb.click_element(text="Skip") or self.adb.click_element(text="Choose your interests"):
             time.sleep(1.5)
         if self.adb.click_element(text="Start watching"):
             time.sleep(1.5)
+        # Swipe up to clear initial tutorial overlay
+        self.adb.shell(f"input swipe {width // 2} {int(height * 0.80)} {width // 2} {int(height * 0.20)} 250")
+        time.sleep(1)
         self.adb.dismiss_popups()
 
     def _dismiss_post_login_prompts(self) -> None:
