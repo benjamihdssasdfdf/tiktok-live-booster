@@ -257,10 +257,28 @@ class TikTokBoosterOrchestrator:
             logger.info(f"[+] Assigned TikTok Account: {acc_name} (ID #{account.get('id')})")
             
             def auth_callback(phase_name: str, phase_reason: str):
-                self.transition_state(RunnerState.APP_STARTED, reason=f"{phase_name}: {phase_reason}")
+                state_mapping = {
+                    "STARTING": RunnerState.STARTING,
+                    "LOGIN_REQUIRED": RunnerState.LOGIN_REQUIRED,
+                    "LOGIN_SUBMITTING": RunnerState.LOGIN_SUBMITTING,
+                    "2FA_REQUIRED": RunnerState.TWO_FA_REQUIRED,
+                    "AUTHENTICATED": RunnerState.AUTHENTICATED,
+                    "LOGIN_FAILED": RunnerState.LOGIN_FAILED,
+                    "LOGIN_BLOCKED": RunnerState.LOGIN_BLOCKED,
+                }
+                mapped_state = state_mapping.get(phase_name, RunnerState.APP_STARTED)
+                self.transition_state(mapped_state, reason=f"{phase_name}: {phase_reason}")
                 self.send_heartbeat(include_screenshot=True, reason=f"{phase_name}: {phase_reason}")
 
-            self.auto_login.authenticate_account(account, state_callback=auth_callback)
+            auth_success = self.auto_login.authenticate_account(account, state_callback=auth_callback)
+            if not auth_success:
+                logger.error("[-] In-App authentication failed. Stopping session cleanly without proceeding to Live Stream.")
+                self.transition_state(RunnerState.LOGIN_FAILED, reason="Authentication failed: Application remains on login screen")
+                self.send_heartbeat(include_screenshot=True, reason="Authentication failed diagnostics snapshot")
+                self._notify_stop()
+                return
+
+            self.transition_state(RunnerState.AUTHENTICATED, reason="Account authenticated into TikTok feed")
             self._run_stream_session(account=account)
         else:
             logger.info("No dedicated account assigned in backend. Running in Guest Viewer mode.")
@@ -299,7 +317,7 @@ class TikTokBoosterOrchestrator:
             self.adb.set_persistent_device_identity(account.device_id)
 
         # 2. Launch Target Stream
-        self.transition_state(RunnerState.TARGET_OPENING, reason=f"Opening target live stream room: {self.config.stream_url}")
+        self.transition_state(RunnerState.OPENING_LIVE, reason=f"Opening target live stream room: {self.config.stream_url}")
         self.adb.launch_live_stream(
             stream_url=self.config.stream_url,
             room_id=self.config.room_id,
@@ -309,10 +327,16 @@ class TikTokBoosterOrchestrator:
         time.sleep(3)
         self.adb.dismiss_popups()
 
+        if self.adb.is_login_or_signup_screen():
+            logger.error("[-] Screen is on login/signup page. Live stream cannot be opened.")
+            self.transition_state(RunnerState.LOGIN_FAILED, reason="Live room blocked by Login/SignUp screen")
+            self.send_heartbeat(include_screenshot=True, reason="Live room blocked by login screen")
+            return
+
         if self.adb.is_live_stream_active():
-            self.transition_state(RunnerState.TARGET_VERIFIED, reason="TikTok Live stream player confirmed active")
+            self.transition_state(RunnerState.WATCHING, reason="TikTok Live stream player confirmed active and receiving video")
         else:
-            self.transition_state(RunnerState.TARGET_OPENING, reason="Waiting for live player buffer to confirm active stream")
+            self.transition_state(RunnerState.OPENING_LIVE, reason="Waiting for live player buffer to confirm active stream")
 
         self.send_heartbeat(include_screenshot=True, reason="Live room loaded, starting auto-liker loop")
 

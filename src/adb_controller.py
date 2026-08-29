@@ -445,24 +445,158 @@ class ADBController:
 
         return True
 
+    def dump_ui_hierarchy(self) -> str:
+        """Dumps the current Android UI hierarchy XML using uiautomator."""
+        try:
+            self.shell("uiautomator dump /sdcard/window_dump.xml", timeout=10)
+            xml_str = self.shell("cat /sdcard/window_dump.xml", timeout=10)
+            if xml_str and "<hierarchy" in xml_str:
+                return xml_str
+        except Exception as e:
+            logger.debug(f"uiautomator dump notice: {e}")
+        return ""
+
+    def find_element(self, text: Optional[str] = None, content_desc: Optional[str] = None, resource_id: Optional[str] = None) -> Optional[Tuple[int, int]]:
+        """
+        Parses the current UI hierarchy XML to find an element matching text, content-desc, or resource-id.
+        Prioritizes exact matches before falling back to partial substring matches.
+        Returns the center coordinates (x, y) if found, or None.
+        """
+        xml_str = self.dump_ui_hierarchy()
+        if not xml_str:
+            return None
+
+        try:
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(xml_str)
+            
+            nodes = list(root.iter('node'))
+
+            # Pass 1: Exact matches
+            for node in nodes:
+                node_text = node.attrib.get('text', '')
+                node_desc = node.attrib.get('content-desc', '')
+                node_id = node.attrib.get('resource-id', '')
+                bounds_str = node.attrib.get('bounds', '')
+
+                matched = False
+                if text and (text.lower() == node_text.lower() or text.lower() == node_desc.lower()):
+                    matched = True
+                elif content_desc and (content_desc.lower() == node_desc.lower() or content_desc.lower() == node_text.lower()):
+                    matched = True
+                elif resource_id and resource_id.lower() == node_id.lower():
+                    matched = True
+
+                if matched and bounds_str:
+                    m = re.findall(r'\[(\d+),(\d+)\]', bounds_str)
+                    if len(m) == 2:
+                        x1, y1 = int(m[0][0]), int(m[0][1])
+                        x2, y2 = int(m[1][0]), int(m[1][1])
+                        return ((x1 + x2) // 2, (y1 + y2) // 2)
+
+            # Pass 2: Substring matches
+            for node in nodes:
+                node_text = node.attrib.get('text', '')
+                node_desc = node.attrib.get('content-desc', '')
+                node_id = node.attrib.get('resource-id', '')
+                bounds_str = node.attrib.get('bounds', '')
+
+                matched = False
+                if text and (text.lower() in node_text.lower() or text.lower() in node_desc.lower()):
+                    matched = True
+                elif content_desc and (content_desc.lower() in node_desc.lower() or content_desc.lower() in node_text.lower()):
+                    matched = True
+                elif resource_id and resource_id.lower() in node_id.lower():
+                    matched = True
+
+                if matched and bounds_str:
+                    m = re.findall(r'\[(\d+),(\d+)\]', bounds_str)
+                    if len(m) == 2:
+                        x1, y1 = int(m[0][0]), int(m[0][1])
+                        x2, y2 = int(m[1][0]), int(m[1][1])
+                        return ((x1 + x2) // 2, (y1 + y2) // 2)
+        except Exception as e:
+            logger.debug(f"Element parse error: {e}")
+        return None
+
+    def click_element(self, text: Optional[str] = None, content_desc: Optional[str] = None, resource_id: Optional[str] = None) -> bool:
+        """Finds and taps on a visible UI element by text, description, or ID."""
+        coords = self.find_element(text=text, content_desc=content_desc, resource_id=resource_id)
+        if coords:
+            x, y = coords
+            logger.info(f"[+] UI Auto-Locator found '{text or content_desc or resource_id}' at ({x}, {y}). Tapping...")
+            self.shell(f"input tap {x} {y}")
+            return True
+        return False
+
+    def get_ui_text_content(self) -> str:
+        """Dumps UI hierarchy and returns concatenated text of all visible elements."""
+        xml_str = self.dump_ui_hierarchy()
+        if not xml_str:
+            return ""
+        try:
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(xml_str)
+            texts = []
+            for node in root.iter('node'):
+                t = node.attrib.get('text', '')
+                d = node.attrib.get('content-desc', '')
+                if t: texts.append(t)
+                if d: texts.append(d)
+            return " ".join(texts)
+        except Exception:
+            return ""
+
+    def is_login_or_signup_screen(self) -> bool:
+        """Checks if TikTok's Login or Sign-up screen is actively visible."""
+        ui_text = self.get_ui_text_content().lower()
+        if not ui_text:
+            out = self.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'").lower()
+            return "login" in out or "signup" in out or "authorize" in out
+        
+        login_phrases = [
+            "log in to tiktok",
+            "sign up for tiktok",
+            "use phone / email / username",
+            "use phone",
+            "continue with google",
+            "continue with facebook",
+            "enter email or username",
+            "already have an account",
+            "log in",
+            "password"
+        ]
+        return any(phrase in ui_text for phrase in ["log in to tiktok", "sign up for tiktok", "use phone / email / username", "enter email or username", "already have an account? log in"])
+
+    def is_authenticated_user_feed(self) -> bool:
+        """Verifies whether the TikTok app is in an authenticated user state."""
+        if self.is_login_or_signup_screen():
+            return False
+        ui_text = self.get_ui_text_content().lower()
+        if not ui_text:
+            return False
+        has_nav = ("profile" in ui_text and "home" in ui_text) or ("for you" in ui_text) or ("following" in ui_text) or ("inbox" in ui_text)
+        return has_nav
+
     def is_live_stream_active(self) -> bool:
         """
-        Verifies whether the device is actively inside the TikTok live room or browser live viewer.
-        Checks:
-        1. Current foreground activity is TikTok or browser.
-        2. Screen does NOT contain login/signup modal.
+        Verifies whether the device is actively inside the TikTok live room.
+        Guarantees that login/signup screen is NOT visible and live elements or video activity are present.
         """
         if not self._is_tiktok_in_foreground():
             return False
 
-        if self._is_login_screen_active():
+        if self.is_login_or_signup_screen():
+            logger.warning("[-] Live check failed: Login/Signup modal is active on screen.")
             return False
 
-        out = self.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'").lower()
-        if any(k in out for k in ["live", "mainactivity", "feed", "chrome", "aweme"]):
+        ui_text = self.get_ui_text_content().lower()
+        live_indicators = ["follow", "rose", "share", "send a comment", "gift", "tap to like", "host", "ranking", "live"]
+        if any(ind in ui_text for ind in ["follow", "rose", "share", "gift", "send a comment"]):
             return True
 
-        return True
+        out = self.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'").lower()
+        return any(k in out for k in ["live", "mainactivity", "feed", "aweme"])
 
     def _is_tiktok_in_foreground(self) -> bool:
         """Checks if TikTok (or browser fallback) is currently the foreground active app."""
@@ -475,11 +609,10 @@ class ADBController:
 
     def _is_login_screen_active(self) -> bool:
         """Checks if TikTok's Login/SignUp modal is currently blocking the screen."""
-        out = self.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'").lower()
-        return "login" in out or "signup" in out or "authorize" in out
+        return self.is_login_or_signup_screen()
 
     def dismiss_popups(self) -> None:
-        """Dismisses common prompts (Full-screen tooltips, System ANRs, Login screens, Notifications, Cookie consents) using UI Inspection."""
+        """Dismisses common prompts (Full-screen tooltips, System ANRs, Notifications, Cookie consents) using UI Inspection."""
         logger.info("Inspecting UI hierarchy to dismiss modal dialogs...")
         
         # 1. Dismiss Android Immersive / Full-screen tooltips ("Got it" / "OK")
@@ -494,13 +627,8 @@ class ADBController:
         if self.click_element(text="Don't allow") or self.click_element(text="Deny"):
             time.sleep(0.5)
 
-        # 4. Dismiss 'Log in to TikTok' modal by clicking exact close button or 'Skip'
-        if self.click_element(content_desc="Close") or self.click_element(resource_id="close_btn") or self.click_element(text="Skip"):
-            time.sleep(0.5)
-
-        # 5. Fallback Back key if login activity still detected
-        if self._is_login_screen_active():
-            self.shell("input keyevent 4")
+        # 4. Dismiss onboarding / interest picker
+        if self.click_element(text="Skip") or self.click_element(text="Start watching"):
             time.sleep(0.5)
 
     def get_safe_live_tap_coordinates(self) -> Tuple[int, int]:
