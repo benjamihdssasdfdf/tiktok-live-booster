@@ -485,7 +485,9 @@ class ADBController:
                     return ((x1 + x2) // 2, (y1 + y2) // 2), y1
                 return None, 0
 
-            # Pass 1: Exact matches on CLICKABLE or BUTTON elements (avoiding static top headers y < 180)
+            # Pass 1: Exact matches on action buttons / clickable elements (strictly below top header y >= 180)
+            is_action_btn = (text and text.lower() in ["log in", "continue", "next", "submit", "sign in"]) or (resource_id and "btn" in resource_id.lower())
+
             for node in nodes:
                 node_text = node.attrib.get('text', '')
                 node_desc = node.attrib.get('content-desc', '')
@@ -503,11 +505,15 @@ class ADBController:
 
                 if matched and bounds_str:
                     coords, top_y = parse_bounds(bounds_str)
-                    # If this is an action button ("Log in", "Next"), prioritize clickable element below header (y >= 180)
-                    if coords and (is_clickable or top_y >= 180):
-                        return coords
+                    if coords:
+                        if is_action_btn:
+                            # Action buttons MUST be in the main body (y >= 180), never in top header bar
+                            if top_y >= 180 and is_clickable:
+                                return coords
+                        elif is_clickable or top_y >= 180:
+                            return coords
 
-            # Pass 2: Any exact match
+            # Pass 2: Any exact match (excluding top header for action buttons)
             for node in nodes:
                 node_text = node.attrib.get('text', '')
                 node_desc = node.attrib.get('content-desc', '')
@@ -523,8 +529,10 @@ class ADBController:
                     matched = True
 
                 if matched and bounds_str:
-                    coords, _ = parse_bounds(bounds_str)
+                    coords, top_y = parse_bounds(bounds_str)
                     if coords:
+                        if is_action_btn and top_y < 180:
+                            continue
                         return coords
 
             # Pass 3: Substring matches (below top header y >= 180)
