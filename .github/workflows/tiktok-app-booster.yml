@@ -25,13 +25,27 @@ on:
         default: 'none'
 
 jobs:
+  generate-matrix:
+    name: Generate Runner Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix
+        run: |
+          COUNT="${{ github.event.inputs.runner_count || '1' }}"
+          echo "Generating matrix for $COUNT runners..."
+          RUNNERS=$(python3 -c "import json; count=max(1, min(20, int('$COUNT'))); print(json.dumps(list(range(count))))")
+          echo "matrix=$RUNNERS" >> $GITHUB_OUTPUT
+
   launch-mobile-viewers:
+    needs: generate-matrix
     name: Milestone 1 Android 14 Runner #${{ matrix.runner_id }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        runner_id: [0]
+        runner_id: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
 
     steps:
       - name: Checkout Repository
