@@ -158,18 +158,3 @@ jobs:
               }
               Start-Sleep -Seconds 5
           }
-
-      - name: Hold Open for Interactive Testing (If Enabled)
-        if: ${{ github.event.inputs.enable_rdp == 'true' || github.event.inputs.ngrok_auth_token != '' || github.event.inputs.tailscale_auth_key != '' }}
-        shell: powershell
-        run: |
-          $env:PATH += ";C:\platform-tools"
-          Write-Host "=== Session Hold-Open for Interactive Remote Testing ===" -ForegroundColor Cyan
-          Write-Host ">>> Runner is holding open for 45 minutes." -ForegroundColor Green
-          Write-Host ">>> Connect via RDP: Username: runneradmin | Password: LDPlayer1234!" -ForegroundColor Green
-          $timeout = [DateTime]::UtcNow.AddMinutes(45)
-          while ([DateTime]::UtcNow -lt $timeout) {
-              $devices = & C:\platform-tools\adb.exe devices
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Live Device Status: $($devices -join ' ')"
-              Start-Sleep -Seconds 30
-          }
