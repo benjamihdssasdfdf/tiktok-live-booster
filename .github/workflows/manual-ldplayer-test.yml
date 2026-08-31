@@ -45,10 +45,12 @@ jobs:
         run: |
           Write-Host "=== [2/5] Installing Android Platform-Tools (ADB) ===" -ForegroundColor Cyan
           $adbZip = "$env:TEMP\platform-tools.zip"
-          $adbDir = "C:\platform-tools"
-          & curl.exe -fSL -o $adbZip "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
-          Expand-Archive -Path $adbZip -DestinationPath "C:\" -Force
-          Write-Host "[+] ADB installed to C:\platform-tools\adb.exe" -ForegroundColor Green
+          if (-not (Test-Path "C:\platform-tools\adb.exe")) {
+              Write-Host "Downloading Google Platform-Tools..." -ForegroundColor Yellow
+              & curl.exe -# -fSL -o $adbZip "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
+              Expand-Archive -Path $adbZip -DestinationPath "C:\" -Force
+          }
+          Write-Host "[+] ADB is ready at C:\platform-tools\adb.exe" -ForegroundColor Green
           echo "C:\platform-tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           $env:PATH += ";C:\platform-tools"
           & C:\platform-tools\adb.exe version
@@ -64,7 +66,7 @@ jobs:
         shell: powershell
         run: |
           Write-Host "=== Setting up Ngrok RDP Tunnel ===" -ForegroundColor Cyan
-          curl.exe -fSL -o ngrok.zip https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip
+          curl.exe -# -fSL -o ngrok.zip https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip
           Expand-Archive ngrok.zip -DestinationPath . -Force
           .\ngrok.exe config add-authtoken "${{ github.event.inputs.ngrok_auth_token }}"
           Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp 3389 --log=stdout" -NoNewWindow
@@ -80,40 +82,40 @@ jobs:
               Write-Host "[-] Could not retrieve ngrok tunnel URL: $_" -ForegroundColor DarkYellow
           }
 
-      - name: Download & Extract LDPlayer 9
+      - name: Download & Extract LDPlayer 9 with Live Progress Bar
         shell: powershell
         run: |
           $env:PATH += ";C:\platform-tools"
-          Write-Host "=== [3/5] Downloading LDPlayer 9 (760MB) via curl.exe ===" -ForegroundColor Cyan
+          Write-Host "=== [3/5] Downloading LDPlayer 9 (760MB) ===" -ForegroundColor Cyan
           $installerPath = "$env:TEMP\LDPlayer9.exe"
-          & curl.exe -fSL --retry 3 --connect-timeout 30 -o $installerPath "https://encdn.ldmnq.com/download/package/LDPlayer9.exe"
           
-          if (Test-Path $installerPath) {
-              $sizeMb = [math]::Round((Get-Item $installerPath).Length / 1MB, 2)
-              Write-Host "[+] Downloaded LDPlayer9.exe ($sizeMb MB)" -ForegroundColor Green
+          if (-not (Test-Path $installerPath)) {
+              & curl.exe -# -fSL --retry 3 --connect-timeout 30 -o $installerPath "https://encdn.ldmnq.com/download/package/LDPlayer9.exe"
           }
+          
+          $sizeMb = [math]::Round((Get-Item $installerPath).Length / 1MB, 2)
+          Write-Host "[+] LDPlayer9.exe downloaded ($sizeMb MB)" -ForegroundColor Green
 
-          Write-Host "`n=== [4/5] Extracting & Installing LDPlayer 9 ===" -ForegroundColor Cyan
-          # 1. 7-Zip extraction
+          Write-Host "`n=== [4/5] Extracting LDPlayer 9 with Live Progress ===" -ForegroundColor Cyan
           $sevenZip = "C:\Program Files\7-Zip\7z.exe"
           if (Test-Path $sevenZip) {
-              Write-Host "Attempting 7-Zip direct extraction into C:\LDPlayer\LDPlayer9..." -ForegroundColor Yellow
-              & $sevenZip x -y "-oC:\LDPlayer\LDPlayer9" $installerPath | Out-Null
+              Write-Host "Extracting archive into C:\LDPlayer\LDPlayer9 (showing live extraction progress)..." -ForegroundColor Yellow
+              & $sevenZip x -y -bsp1 "-oC:\LDPlayer\LDPlayer9" $installerPath
           }
 
-          # 2. Check for console or player executables
+          # Search for executables recursively
           $foundLd = Get-ChildItem -Path @("C:\LDPlayer", "C:\leidian", "$env:ProgramFiles\LDPlayer", "$env:TEMP") -Filter "*console.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
           if (-not $foundLd) {
               $foundLd = Get-ChildItem -Path @("C:\LDPlayer", "C:\leidian", "$env:ProgramFiles\LDPlayer", "$env:TEMP") -Filter "*player.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
           }
 
           if ($foundLd) {
-              Write-Host "[+] FOUND LDPlayer Executable: $foundLd" -ForegroundColor Green
+              Write-Host "`n[+] FOUND LDPlayer Executable: $foundLd" -ForegroundColor Green
               Write-Host "Launching instance 0..." -ForegroundColor Yellow
               Start-Process -FilePath $foundLd -ArgumentList "launch --index 0" -NoNewWindow
-              Write-Host "[+] Launch command executed." -ForegroundColor Green
+              Write-Host "[+] Launch command dispatched!" -ForegroundColor Green
           } else {
-              Write-Host "[-] Executables found under C:\LDPlayer:" -ForegroundColor Yellow
+              Write-Host "`n[-] Executables found under C:\LDPlayer:" -ForegroundColor Yellow
               Get-ChildItem "C:\LDPlayer" -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "   $($_.FullName)" }
           }
 
@@ -121,21 +123,23 @@ jobs:
         shell: powershell
         run: |
           $env:PATH += ";C:\platform-tools"
-          Write-Host "=== [5/5] Verifying ADB Connection (127.0.0.1:5555) ===" -ForegroundColor Cyan
+          Write-Host "=== [5/5] Polling ADB Device Connection (127.0.0.1:5555) ===" -ForegroundColor Cyan
           & C:\platform-tools\adb.exe start-server
           
           $connected = $false
-          for ($i = 1; $i -le 10; $i++) {
+          for ($i = 1; $i -le 12; $i++) {
               & C:\platform-tools\adb.exe connect 127.0.0.1:5555 | Out-Null
               $devices = & C:\platform-tools\adb.exe devices
-              Write-Host "Attempt $i/10: $($devices -join ' ')"
+              Write-Host "Poll [$i/12] Device status: $($devices -join ' ')"
               if ($devices -match "127\.0\.0\.1:5555\s+device") {
                   $connected = $true
-                  Write-Host "[+] LDPlayer Android is online and ready over ADB!" -ForegroundColor Green
+                  Write-Host "`n========================================================" -ForegroundColor Green
+                  Write-Host "[+] SUCCESS: LDPlayer Android is ONLINE and CONNECTED!" -ForegroundColor Green
                   $model = & C:\platform-tools\adb.exe -s 127.0.0.1:5555 shell getprop ro.product.model
                   $androidVer = & C:\platform-tools\adb.exe -s 127.0.0.1:5555 shell getprop ro.build.version.release
-                  Write-Host "    Model: $model" -ForegroundColor Green
-                  Write-Host "    Android Version: $androidVer" -ForegroundColor Green
+                  Write-Host "    Device Model: $model" -ForegroundColor Green
+                  Write-Host "    Android OS: Android $androidVer" -ForegroundColor Green
+                  Write-Host "========================================================`n" -ForegroundColor Green
                   break
               }
               Start-Sleep -Seconds 5
@@ -152,6 +156,6 @@ jobs:
           $timeout = [DateTime]::UtcNow.AddMinutes(45)
           while ([DateTime]::UtcNow -lt $timeout) {
               $devices = & C:\platform-tools\adb.exe devices
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Device Status: $($devices -join ' ')"
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Live Device Status: $($devices -join ' ')"
               Start-Sleep -Seconds 30
           }
