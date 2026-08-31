@@ -2,19 +2,6 @@ name: Fast Manual LDPlayer & Interactive RDP Test
 
 on:
   workflow_dispatch:
-    inputs:
-      enable_rdp:
-        description: 'Enable RDP (Remote Desktop) for interactive GUI access (true/false)'
-        required: false
-        default: 'false'
-      ngrok_auth_token:
-        description: 'Optional Ngrok Token for RDP Tunneling (leave blank if not using ngrok)'
-        required: false
-        default: ''
-      tailscale_auth_key:
-        description: 'Optional Tailscale Auth Key (leave blank if not using Tailscale)'
-        required: false
-        default: ''
 
 jobs:
   fast-ldplayer-test:
