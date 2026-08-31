@@ -30,16 +30,6 @@ if [ "$SDK_VER" != "34" ]; then
 fi
 echo "[PASS] Android 14 (API 34) verified successfully!"
 
-# 1.5 Mask Emulator Signature & Spoof Real Commercial Smartphone Profile
-echo "=== [1.5/5] Spoofing Commercial Device Fingerprint (Pixel 8 Pro) ==="
-adb shell setprop ro.product.model "Pixel 8 Pro" 2>/dev/null || true
-adb shell setprop ro.product.brand "google" 2>/dev/null || true
-adb shell setprop ro.product.manufacturer "Google" 2>/dev/null || true
-adb shell setprop ro.product.device "husky" 2>/dev/null || true
-adb shell setprop ro.build.flavor "husky-user" 2>/dev/null || true
-adb shell setprop ro.build.product "husky" 2>/dev/null || true
-echo "[PASS] Device fingerprint spoofed as Pixel 8 Pro."
-
 # 2. Fast Tap script
 echo "=== [2/4] Setting Up Fast Tap Acceleration Script ==="
 if [ -f "./scripts/fast_tap.sh" ]; then
@@ -72,7 +62,7 @@ STREAM_URL="${STREAM_URL:-https://www.tiktok.com/@tiktok/live}"
 DURATION_MIN="${DURATION_MIN:-60}"
 LIKES_RATE="${LIKES_RATE:-120}"
 
-python3 -m src.main \
+python -m src.main \
   --stream-url "$STREAM_URL" \
   --duration "$DURATION_MIN" \
   --likes-per-min "$LIKES_RATE" \
