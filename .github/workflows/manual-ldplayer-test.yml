@@ -82,7 +82,7 @@ jobs:
               Write-Host "[-] Could not retrieve ngrok tunnel URL: $_" -ForegroundColor DarkYellow
           }
 
-      - name: Download LDPlayer 9 & Prepare Environment
+      - name: Automated LDPlayer 9 Installation & Launch
         shell: powershell
         run: |
           $env:PATH += ";C:\platform-tools"
@@ -96,20 +96,42 @@ jobs:
           $sizeMb = [math]::Round((Get-Item $installerPath).Length / 1MB, 2)
           Write-Host "[+] LDPlayer9.exe downloaded ($sizeMb MB)" -ForegroundColor Green
 
-          # Copy installer to runneradmin Desktop for easy 1-click access via RDP
+          # Copy installer to runneradmin Desktop
           $desktopPath = "C:\Users\runneradmin\Desktop"
           if (Test-Path $desktopPath) {
               Copy-Item $installerPath -Destination "$desktopPath\LDPlayer9_Installer.exe" -Force
-              Write-Host "[+] Copied installer to Desktop: $desktopPath\LDPlayer9_Installer.exe" -ForegroundColor Green
           }
 
-          Write-Host "`n=== [4/5] Launching Silent LDPlayer Setup ===" -ForegroundColor Cyan
-          Write-Host "Starting unattended installer process..." -ForegroundColor Yellow
+          Write-Host "`n=== [4/5] Executing Automated Headless Installation ===" -ForegroundColor Cyan
+          
+          # Try silent install flags first
+          Write-Host "1. Spawning installer process..." -ForegroundColor Yellow
           $proc = Start-Process -FilePath $installerPath -ArgumentList "/S", "/D=C:\LDPlayer\LDPlayer9" -PassThru -NoNewWindow
-          $proc.WaitForExit(60000)
+          
+          # Background auto-clicker: activate window and send Enter key if GUI appears
+          Start-Sleep -Seconds 3
+          try {
+              $wshell = New-Object -ComObject wscript.shell
+              for ($i = 0; $i -lt 5; $i++) {
+                  $activated = $wshell.AppActivate('LDPlayer')
+                  if ($activated) {
+                      Write-Host "[+] Detected installer window. Sending automated Install signal..." -ForegroundColor Green
+                      $wshell.SendKeys('{ENTER}')
+                      $wshell.SendKeys('~')
+                      break
+                  }
+                  Start-Sleep -Seconds 2
+              }
+          } catch {
+              Write-Host "[-] Auto-clicker note: $_" -ForegroundColor DarkYellow
+          }
 
-          # Search in targeted installation directories (instant, no slow crawling)
-          $searchDirs = @("C:\LDPlayer\LDPlayer9", "C:\LDPlayer", "C:\leidian\LDPlayer9", "C:\leidian", "$env:ProgramFiles\LDPlayer9", "${env:ProgramFiles(x86)}\LDPlayer9")
+          # Wait for setup completion
+          Write-Host "Waiting for installation to finalize..." -ForegroundColor Yellow
+          $proc.WaitForExit(75000)
+
+          # Find console or player executable in target paths
+          $searchDirs = @("C:\LDPlayer\LDPlayer9", "C:\LDPlayer", "C:\leidian\LDPlayer9", "C:\leidian", "$env:ProgramFiles\LDPlayer9", "${env:ProgramFiles(x86)}\LDPlayer9", "$env:ProgramFiles\leidian", "${env:ProgramFiles(x86)}\leidian")
           $foundLd = $null
           foreach ($dir in $searchDirs) {
               if (Test-Path $dir) {
@@ -125,12 +147,12 @@ jobs:
           }
 
           if ($foundLd) {
-              Write-Host "[+] FOUND LDPlayer Executable: $foundLd" -ForegroundColor Green
+              Write-Host "`n[+] SUCCESS: Found LDPlayer Executable at: $foundLd" -ForegroundColor Green
               Write-Host "Launching instance 0..." -ForegroundColor Yellow
               Start-Process -FilePath $foundLd -ArgumentList "launch --index 0" -NoNewWindow
-              Write-Host "[+] Launch command dispatched!" -ForegroundColor Green
+              Write-Host "[+] Instance 0 launch command dispatched!" -ForegroundColor Green
           } else {
-              Write-Host "[-] LDPlayer executable will be available when installer finishes or via RDP." -ForegroundColor DarkYellow
+              Write-Host "[-] Executable not found in default paths yet. Testing direct ADB connectivity..." -ForegroundColor DarkYellow
           }
 
       - name: Verify ADB Connection & Device State
@@ -141,10 +163,10 @@ jobs:
           & C:\platform-tools\adb.exe start-server
           
           $connected = $false
-          for ($i = 1; $i -le 10; $i++) {
+          for ($i = 1; $i -le 15; $i++) {
               & C:\platform-tools\adb.exe connect 127.0.0.1:5555 | Out-Null
               $devices = & C:\platform-tools\adb.exe devices
-              Write-Host "Poll [$i/10] Device status: $($devices -join ' ')"
+              Write-Host "Poll [$i/15] Device status: $($devices -join ' ')"
               if ($devices -match "127\.0\.0\.1:5555\s+device") {
                   $connected = $true
                   Write-Host "`n========================================================" -ForegroundColor Green
