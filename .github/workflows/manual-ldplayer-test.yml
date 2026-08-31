@@ -55,7 +55,7 @@ jobs:
           $env:PATH += ";C:\platform-tools"
           & C:\platform-tools\adb.exe version
 
-      - name: Download & Inspect LDPlayer 9 Package
+      - name: Download & Launch LDPlayer 9 Automation
         shell: powershell
         run: |
           $env:PATH += ";C:\platform-tools"
@@ -75,40 +75,57 @@ jobs:
               Copy-Item $installerPath -Destination "$desktopPath\LDPlayer9_Installer.exe" -Force
           }
 
-          Write-Host "`n=== [4/5] 7-Zip Deep Inspection & Extraction ===" -ForegroundColor Cyan
-          $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+          Write-Host "`n=== [4/5] Launching Installer with Background Window Automation ===" -ForegroundColor Cyan
           
-          # List all files inside installer to discover exact executable names
-          Write-Host "Listing archive contents..." -ForegroundColor Yellow
-          & $sevenZip l $installerPath | Select-Object -First 40
-          
-          # Extract all contents into C:\LDPlayer\LDPlayer9
-          Write-Host "Extracting archive into C:\LDPlayer\LDPlayer9..." -ForegroundColor Yellow
-          & $sevenZip x -y "-oC:\LDPlayer\LDPlayer9" $installerPath | Out-Null
-          
-          # Search for any .exe inside the extracted folder
-          Write-Host "Executables found inside C:\LDPlayer:" -ForegroundColor Green
-          Get-ChildItem "C:\LDPlayer" -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "   $($_.FullName)" }
-          
-          # Attempt unattended execution with standard NSIS silent flags
-          Write-Host "`nLaunching unattended setup..." -ForegroundColor Yellow
-          Start-Process -FilePath $installerPath -ArgumentList "/S", "/D=C:\LDPlayer\LDPlayer9" -NoNewWindow
-          
-          # Search for console or player executable across all standard locations
-          $searchDirs = @("C:\LDPlayer\LDPlayer9", "C:\LDPlayer", "C:\leidian\LDPlayer9", "C:\leidian", "$env:ProgramFiles\LDPlayer9", "${env:ProgramFiles(x86)}\LDPlayer9", "$env:ProgramFiles\leidian", "${env:ProgramFiles(x86)}\leidian")
-          $foundLd = $null
-          foreach ($dir in $searchDirs) {
-              if (Test-Path $dir) {
-                  $candidate = Get-ChildItem -Path $dir -Filter "*console.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
-                  if (-not $candidate) {
-                      $candidate = Get-ChildItem -Path $dir -Filter "*player.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
+          # Start background Win32 Clicker
+          $clicker = Start-Job -ScriptBlock {
+              Add-Type @"
+                  using System;
+                  using System.Runtime.InteropServices;
+                  public class Win32 {
+                      [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+                      [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
                   }
-                  if ($candidate) {
-                      $foundLd = $candidate
-                      break
+"@
+              for ($i = 0; $i -lt 40; $i++) {
+                  Start-Sleep -Seconds 1
+                  $procs = Get-Process | Where-Object { $_.ProcessName -match "LDPlayer|dnplayer|leidian|setup" }
+                  foreach ($p in $procs) {
+                      if ($p.MainWindowHandle -and $p.MainWindowHandle -ne [IntPtr]::Zero) {
+                          [Win32]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
+                          [Win32]::keybd_event(0x0D, 0, 0, 0)
+                          [Win32]::keybd_event(0x0D, 0, 2, 0)
+                      }
                   }
               }
           }
+
+          # Launch the installer
+          $proc = Start-Process -FilePath $installerPath -ArgumentList "/S", "/D=C:\LDPlayer\LDPlayer9" -PassThru
+          Write-Host "[+] Installer process spawned with PID: $($proc.Id)" -ForegroundColor Green
+
+          # Wait for installation files to appear (up to 45s)
+          $searchDirs = @("C:\LDPlayer\LDPlayer9", "C:\LDPlayer", "C:\leidian\LDPlayer9", "C:\leidian", "$env:ProgramFiles\LDPlayer9", "${env:ProgramFiles(x86)}\LDPlayer9", "$env:ProgramFiles\leidian", "${env:ProgramFiles(x86)}\leidian")
+          $foundLd = $null
+          for ($t = 0; $t -lt 15; $t++) {
+              foreach ($dir in $searchDirs) {
+                  if (Test-Path $dir) {
+                      $candidate = Get-ChildItem -Path $dir -Filter "*console.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
+                      if (-not $candidate) {
+                          $candidate = Get-ChildItem -Path $dir -Filter "*player.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
+                      }
+                      if ($candidate) {
+                          $foundLd = $candidate
+                          break
+                      }
+                  }
+              }
+              if ($foundLd) { break }
+              Start-Sleep -Seconds 3
+          }
+
+          Stop-Job $clicker -ErrorAction SilentlyContinue
+          Remove-Job $clicker -ErrorAction SilentlyContinue
 
           if ($foundLd) {
               Write-Host "`n[+] FOUND LDPlayer Executable at: $foundLd" -ForegroundColor Green
@@ -116,7 +133,7 @@ jobs:
               Start-Process -FilePath $foundLd -ArgumentList "launch --index 0" -NoNewWindow
               Write-Host "[+] Instance 0 launch command dispatched!" -ForegroundColor Green
           } else {
-              Write-Host "[-] Direct console executable not found. Testing direct ADB connectivity..." -ForegroundColor DarkYellow
+              Write-Host "[-] Direct console executable not found yet. Testing ADB connectivity..." -ForegroundColor DarkYellow
           }
 
       - name: Verify ADB Connection & Device State
@@ -127,10 +144,10 @@ jobs:
           & C:\platform-tools\adb.exe start-server
           
           $connected = $false
-          for ($i = 1; $i -le 12; $i++) {
+          for ($i = 1; $i -le 15; $i++) {
               & C:\platform-tools\adb.exe connect 127.0.0.1:5555 | Out-Null
               $devices = & C:\platform-tools\adb.exe devices
-              Write-Host "Poll [$i/12] Device status: $($devices -join ' ')"
+              Write-Host "Poll [$i/15] Device status: $($devices -join ' ')"
               if ($devices -match "127\.0\.0\.1:5555\s+device") {
                   $connected = $true
                   Write-Host "`n========================================================" -ForegroundColor Green
