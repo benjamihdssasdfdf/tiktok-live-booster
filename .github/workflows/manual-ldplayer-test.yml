@@ -55,34 +55,7 @@ jobs:
           $env:PATH += ";C:\platform-tools"
           & C:\platform-tools\adb.exe version
 
-      - name: Setup Tailscale Tunnel (If Auth Key Provided)
-        if: ${{ github.event.inputs.tailscale_auth_key != '' }}
-        uses: tailscale/github-action@v2
-        with:
-          authkey: ${{ github.event.inputs.tailscale_auth_key }}
-
-      - name: Setup Ngrok RDP Tunnel (If Ngrok Token Provided)
-        if: ${{ github.event.inputs.ngrok_auth_token != '' }}
-        shell: powershell
-        run: |
-          Write-Host "=== Setting up Ngrok RDP Tunnel ===" -ForegroundColor Cyan
-          curl.exe -# -fSL -o ngrok.zip https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip
-          Expand-Archive ngrok.zip -DestinationPath . -Force
-          .\ngrok.exe config add-authtoken "${{ github.event.inputs.ngrok_auth_token }}"
-          Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp 3389 --log=stdout" -NoNewWindow
-          Start-Sleep -Seconds 5
-          try {
-              $tunnels = (Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels").tunnels
-              Write-Host "`n========================================================" -ForegroundColor Yellow
-              Write-Host ">>> CONNECT TO RDP VIA NGROK: $($tunnels[0].public_url)" -ForegroundColor Green
-              Write-Host ">>> Username: runneradmin" -ForegroundColor Green
-              Write-Host ">>> Password: LDPlayer1234!" -ForegroundColor Green
-              Write-Host "========================================================`n" -ForegroundColor Yellow
-          } catch {
-              Write-Host "[-] Could not retrieve ngrok tunnel URL: $_" -ForegroundColor DarkYellow
-          }
-
-      - name: Automated LDPlayer 9 Installation & Launch
+      - name: Download & Inspect LDPlayer 9 Package
         shell: powershell
         run: |
           $env:PATH += ";C:\platform-tools"
@@ -102,35 +75,26 @@ jobs:
               Copy-Item $installerPath -Destination "$desktopPath\LDPlayer9_Installer.exe" -Force
           }
 
-          Write-Host "`n=== [4/5] Executing Automated Headless Installation ===" -ForegroundColor Cyan
+          Write-Host "`n=== [4/5] 7-Zip Deep Inspection & Extraction ===" -ForegroundColor Cyan
+          $sevenZip = "C:\Program Files\7-Zip\7z.exe"
           
-          # Try silent install flags first
-          Write-Host "1. Spawning installer process..." -ForegroundColor Yellow
-          $proc = Start-Process -FilePath $installerPath -ArgumentList "/S", "/D=C:\LDPlayer\LDPlayer9" -PassThru -NoNewWindow
+          # List all files inside installer to discover exact executable names
+          Write-Host "Listing archive contents..." -ForegroundColor Yellow
+          & $sevenZip l $installerPath | Select-Object -First 40
           
-          # Background auto-clicker: activate window and send Enter key if GUI appears
-          Start-Sleep -Seconds 3
-          try {
-              $wshell = New-Object -ComObject wscript.shell
-              for ($i = 0; $i -lt 5; $i++) {
-                  $activated = $wshell.AppActivate('LDPlayer')
-                  if ($activated) {
-                      Write-Host "[+] Detected installer window. Sending automated Install signal..." -ForegroundColor Green
-                      $wshell.SendKeys('{ENTER}')
-                      $wshell.SendKeys('~')
-                      break
-                  }
-                  Start-Sleep -Seconds 2
-              }
-          } catch {
-              Write-Host "[-] Auto-clicker note: $_" -ForegroundColor DarkYellow
-          }
-
-          # Wait for setup completion
-          Write-Host "Waiting for installation to finalize..." -ForegroundColor Yellow
-          $proc.WaitForExit(75000)
-
-          # Find console or player executable in target paths
+          # Extract all contents into C:\LDPlayer\LDPlayer9
+          Write-Host "Extracting archive into C:\LDPlayer\LDPlayer9..." -ForegroundColor Yellow
+          & $sevenZip x -y "-oC:\LDPlayer\LDPlayer9" $installerPath | Out-Null
+          
+          # Search for any .exe inside the extracted folder
+          Write-Host "Executables found inside C:\LDPlayer:" -ForegroundColor Green
+          Get-ChildItem "C:\LDPlayer" -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "   $($_.FullName)" }
+          
+          # Attempt silent execution with standard NSIS flags via cmd.exe
+          Write-Host "`nExecuting silent setup via cmd.exe..." -ForegroundColor Yellow
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$installerPath /S /D=C:\LDPlayer\LDPlayer9`"" -Wait -NoNewWindow
+          
+          # Search for console or player executable across all standard locations
           $searchDirs = @("C:\LDPlayer\LDPlayer9", "C:\LDPlayer", "C:\leidian\LDPlayer9", "C:\leidian", "$env:ProgramFiles\LDPlayer9", "${env:ProgramFiles(x86)}\LDPlayer9", "$env:ProgramFiles\leidian", "${env:ProgramFiles(x86)}\leidian")
           $foundLd = $null
           foreach ($dir in $searchDirs) {
@@ -147,12 +111,12 @@ jobs:
           }
 
           if ($foundLd) {
-              Write-Host "`n[+] SUCCESS: Found LDPlayer Executable at: $foundLd" -ForegroundColor Green
+              Write-Host "`n[+] FOUND LDPlayer Executable at: $foundLd" -ForegroundColor Green
               Write-Host "Launching instance 0..." -ForegroundColor Yellow
               Start-Process -FilePath $foundLd -ArgumentList "launch --index 0" -NoNewWindow
               Write-Host "[+] Instance 0 launch command dispatched!" -ForegroundColor Green
           } else {
-              Write-Host "[-] Executable not found in default paths yet. Testing direct ADB connectivity..." -ForegroundColor DarkYellow
+              Write-Host "[-] Direct console executable not found. Testing direct ADB connectivity..." -ForegroundColor DarkYellow
           }
 
       - name: Verify ADB Connection & Device State
@@ -163,10 +127,10 @@ jobs:
           & C:\platform-tools\adb.exe start-server
           
           $connected = $false
-          for ($i = 1; $i -le 15; $i++) {
+          for ($i = 1; $i -le 12; $i++) {
               & C:\platform-tools\adb.exe connect 127.0.0.1:5555 | Out-Null
               $devices = & C:\platform-tools\adb.exe devices
-              Write-Host "Poll [$i/15] Device status: $($devices -join ' ')"
+              Write-Host "Poll [$i/12] Device status: $($devices -join ' ')"
               if ($devices -match "127\.0\.0\.1:5555\s+device") {
                   $connected = $true
                   Write-Host "`n========================================================" -ForegroundColor Green
