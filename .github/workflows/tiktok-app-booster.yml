@@ -109,7 +109,9 @@ jobs:
           echo "OPENVPN_AUTH_FILE=/etc/openvpn/auth.txt" >> $GITHUB_ENV
 
       - name: Make Scripts Executable
-        run: chmod +x ./scripts/*.sh
+        run: |
+          sed -i 's/\r$//' ./scripts/*.sh 2>/dev/null || true
+          chmod +x ./scripts/*.sh
 
       - name: Create AVD & Run Android 14 Automation
         uses: reactivecircus/android-emulator-runner@v2
@@ -121,7 +123,7 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -camera-back none
           disable-animations: true
-          script: ./scripts/run_emulator_session.sh
+          script: bash ./scripts/run_emulator_session.sh
         env:
           RUNNER_INDEX: ${{ matrix.runner_id }}
           STREAM_URL: ${{ github.event.inputs.stream_url }}
