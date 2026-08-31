@@ -1,0 +1,105 @@
+name: Fast Manual LDPlayer & Interactive RDP Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      enable_rdp:
+        description: 'Enable RDP (Remote Desktop) for interactive GUI access (true/false)'
+        required: false
+        default: 'false'
+      ngrok_auth_token:
+        description: 'Optional Ngrok Token for RDP Tunneling (leave blank if not using ngrok)'
+        required: false
+        default: ''
+      tailscale_auth_key:
+        description: 'Optional Tailscale Auth Key (leave blank if not using Tailscale)'
+        required: false
+        default: ''
+
+jobs:
+  fast-ldplayer-test:
+    name: Fast LDPlayer 9 Windows Test
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure Windows User & Enable RDP
+        shell: powershell
+        run: |
+          Write-Host "=== 1. Enabling Windows Remote Desktop (RDP) ===" -ForegroundColor Cyan
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+          
+          # Set password for runneradmin user
+          $Password = ConvertTo-SecureString "LDPlayer1234!" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $Password
+          Write-Host "[+] Windows RDP is enabled. Username: runneradmin | Password: LDPlayer1234!" -ForegroundColor Green
+
+      - name: Setup Tailscale Tunnel (If Auth Key Provided)
+        if: ${{ github.event.inputs.tailscale_auth_key != '' }}
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ github.event.inputs.tailscale_auth_key }}
+
+      - name: Setup Ngrok RDP Tunnel (If Ngrok Token Provided)
+        if: ${{ github.event.inputs.ngrok_auth_token != '' }}
+        shell: powershell
+        run: |
+          Write-Host "=== Setting up Ngrok RDP Tunnel ===" -ForegroundColor Cyan
+          curl.exe -fSL -o ngrok.zip https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip
+          Expand-Archive ngrok.zip -DestinationPath . -Force
+          .\ngrok.exe config add-authtoken "${{ github.event.inputs.ngrok_auth_token }}"
+          Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp 3389 --log=stdout" -NoNewWindow
+          Start-Sleep -Seconds 5
+          $tunnels = (Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels").tunnels
+          Write-Host "`n========================================================" -ForegroundColor Yellow
+          Write-Host ">>> CONNECT TO RDP VIA NGROK: $($tunnels[0].public_url)" -ForegroundColor Green
+          Write-Host ">>> Username: runneradmin" -ForegroundColor Green
+          Write-Host ">>> Password: LDPlayer1234!" -ForegroundColor Green
+          Write-Host "========================================================`n" -ForegroundColor Yellow
+
+      - name: Download & Launch LDPlayer 9
+        shell: powershell
+        run: |
+          Write-Host "=== 2. Downloading & Installing LDPlayer 9 ===" -ForegroundColor Cyan
+          $installerPath = "$env:TEMP\LDPlayer9.exe"
+          & curl.exe -fSL --retry 3 -o $installerPath "https://encdn.ldmnq.com/download/package/LDPlayer9.exe"
+          
+          # Try automated silent installation
+          Write-Host "Running automated installer..." -ForegroundColor Yellow
+          $proc = Start-Process -FilePath $installerPath -ArgumentList "/S", "-s", "-path", "C:\LDPlayer\LDPlayer9" -PassThru -NoNewWindow
+          $proc.WaitForExit(90000)
+          
+          # Search for console executable
+          $foundLd = Get-ChildItem -Path @("C:\LDPlayer", "C:\leidian", "$env:ProgramFiles\LDPlayer", "$env:TEMP") -Filter "*console.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
+          
+          if ($foundLd) {
+              Write-Host "[+] Found LDPlayer Console: $foundLd" -ForegroundColor Green
+              Write-Host "Launching instance 0..." -ForegroundColor Yellow
+              & $foundLd launch --index 0
+          } else {
+              Write-Host "[-] Console not found automatically. If RDP is enabled, you can run $installerPath directly on screen!" -ForegroundColor DarkYellow
+          }
+
+      - name: Verify ADB Connection
+        shell: powershell
+        run: |
+          Write-Host "=== 3. Checking ADB Connection ===" -ForegroundColor Cyan
+          & adb connect 127.0.0.1:5555
+          & adb devices -l
+
+      - name: Keep-Alive for Interactive Testing (If RDP Enabled)
+        if: ${{ github.event.inputs.enable_rdp == 'true' || github.event.inputs.ngrok_auth_token != '' || github.event.inputs.tailscale_auth_key != '' }}
+        shell: powershell
+        run: |
+          Write-Host "`n>>> Runner is now holding open for 60 minutes for interactive testing." -ForegroundColor Green
+          Write-Host ">>> Connect via RDP and interact with LDPlayer directly!" -ForegroundColor Green
+          $timeout = [DateTime]::UtcNow.AddMinutes(60)
+          while ([DateTime]::UtcNow -lt $timeout) {
+              $devices = & adb devices
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Device Status: $($devices -join ' ')"
+              Start-Sleep -Seconds 30
+          }
