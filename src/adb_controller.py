@@ -670,6 +670,13 @@ class ADBController:
         if self.click_element(text="Skip") or self.click_element(text="Start watching"):
             time.sleep(0.5)
 
+        # 5. Dismiss 'Log in to TikTok' modal to enter live stream as guest
+        if self.is_login_or_signup_screen():
+            logger.info("Dismissing 'Log in to TikTok' modal to enter live stream...")
+            if not self.click_element(content_desc="Close") and not self.click_element(text="Close"):
+                self.shell("input keyevent 4")
+            time.sleep(1)
+
     def get_safe_live_tap_coordinates(self) -> Tuple[int, int]:
         """
         Calculates safe (X, Y) coordinates inside the Live Stream video viewport.
