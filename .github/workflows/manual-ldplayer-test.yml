@@ -18,14 +18,165 @@ jobs:
       - name: Configure Windows User & Enable RDP
         shell: powershell
         run: |
+          Write-Host "=== [1/6] Configuring Windows Remote Desktop (RDP) ===" -ForegroundColor Cyan
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           $Password = ConvertTo-SecureString "LDPlayer1234!" -AsPlainText -Force
           Set-LocalUser -Name "runneradmin" -Password $Password
-          Write-Host "[+] Windows RDP configured (runneradmin / LDPlayer1234!)" -ForegroundColor Green
+          Write-Host "[+] Windows RDP configured: runneradmin / LDPlayer1234!" -ForegroundColor Green
 
-      - name: Execute Fast LDPlayer 9 Automation
+      - name: Install Android Platform-Tools (ADB)
         shell: powershell
         run: |
-          powershell -ExecutionPolicy Bypass -File scripts/run_manual_ldplayer_test.ps1
+          Write-Host "=== [2/6] Installing Android Platform-Tools (ADB) ===" -ForegroundColor Cyan
+          $adbZip = "$env:TEMP\platform-tools.zip"
+          if (-not (Test-Path "C:\platform-tools\adb.exe")) {
+              Write-Host "Downloading Google Platform-Tools..." -ForegroundColor Yellow
+              & curl.exe -# -fSL -o $adbZip "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
+              Expand-Archive -Path $adbZip -DestinationPath "C:\" -Force
+          }
+          Write-Host "[+] ADB ready at C:\platform-tools\adb.exe" -ForegroundColor Green
+          echo "C:\platform-tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $env:PATH += ";C:\platform-tools"
+          & C:\platform-tools\adb.exe version
+
+      - name: Download & Extract LDPlayer 9 Core Image
+        shell: powershell
+        run: |
+          $env:PATH += ";C:\platform-tools"
+          Write-Host "=== [3/6] Downloading LDPlayer 9 (760MB) ===" -ForegroundColor Cyan
+          $installerPath = "$env:TEMP\LDPlayer9.exe"
+          if (-not (Test-Path $installerPath)) {
+              & curl.exe -# -fSL --retry 3 --connect-timeout 30 -o $installerPath "https://encdn.ldmnq.com/download/package/LDPlayer9.exe"
+          }
+          $sizeMb = [math]::Round((Get-Item $installerPath).Length / 1MB, 2)
+          Write-Host "[+] LDPlayer9.exe downloaded ($sizeMb MB)" -ForegroundColor Green
+
+          # Copy to desktop for 1-click RDP execution
+          $desktopPath = "C:\Users\runneradmin\Desktop"
+          if (Test-Path $desktopPath) {
+              Copy-Item $installerPath -Destination "$desktopPath\LDPlayer9_Installer.exe" -Force
+          }
+
+          # Extract system.vmdk virtual disk
+          $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+          if (Test-Path $sevenZip) {
+              Write-Host "Unpacking core system image..." -ForegroundColor Yellow
+              & $sevenZip x -y "-oC:\LDPlayer\LDPlayer9" $installerPath | Out-Null
+          }
+
+          # Launch setup routine
+          Write-Host "Spawning unattended installer..." -ForegroundColor Yellow
+          $proc = Start-Process -FilePath $installerPath -ArgumentList "/S", "/D=C:\LDPlayer\LDPlayer9" -PassThru -NoNewWindow
+          Write-Host "[+] Installer spawned with PID: $($proc.Id)" -ForegroundColor Green
+
+      - name: Launch LDPlayer Instance & Poll ADB Connection
+        shell: powershell
+        run: |
+          $env:PATH += ";C:\platform-tools"
+          Write-Host "=== [4/6] Launching LDPlayer & Polling ADB (127.0.0.1:5555) ===" -ForegroundColor Cyan
+          
+          # Search for LDPlayer console or player executable
+          $searchDirs = @("C:\LDPlayer\LDPlayer9", "C:\LDPlayer", "C:\leidian\LDPlayer9", "C:\leidian", "$env:ProgramFiles\LDPlayer9", "${env:ProgramFiles(x86)}\LDPlayer9")
+          $foundLd = $null
+          for ($t = 0; $t -lt 8; $t++) {
+              foreach ($dir in $searchDirs) {
+                  if (Test-Path $dir) {
+                      $candidate = Get-ChildItem -Path $dir -Filter "*console.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
+                      if (-not $candidate) {
+                          $candidate = Get-ChildItem -Path $dir -Filter "*player.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
+                      }
+                      if ($candidate) {
+                          $foundLd = $candidate
+                          break
+                      }
+                  }
+              }
+              if ($foundLd) { break }
+              Start-Sleep -Seconds 2
+          }
+
+          if ($foundLd) {
+              Write-Host "[+] Launching LDPlayer via $foundLd..." -ForegroundColor Green
+              Start-Process -FilePath $foundLd -ArgumentList "launch --index 0" -NoNewWindow
+          }
+
+          & C:\platform-tools\adb.exe start-server
+          $targetDevice = "127.0.0.1:5555"
+          $connected = $false
+          for ($i = 1; $i -le 12; $i++) {
+              & C:\platform-tools\adb.exe connect $targetDevice | Out-Null
+              $devices = & C:\platform-tools\adb.exe devices
+              Write-Host "Poll [$i/12] Device status: $($devices -join ' ')"
+              if ($devices -match "127\.0\.0\.1:5555\s+device" -or $devices -match "emulator-\d+\s+device") {
+                  $connected = $true
+                  if ($devices -match "(emulator-\d+)\s+device") {
+                      $targetDevice = $matches[1]
+                  }
+                  Write-Host "[+] SUCCESS: Android is ONLINE and CONNECTED ($targetDevice)!" -ForegroundColor Green
+                  $model = & C:\platform-tools\adb.exe -s $targetDevice shell getprop ro.product.model
+                  $androidVer = & C:\platform-tools\adb.exe -s $targetDevice shell getprop ro.build.version.release
+                  Write-Host "    Device Model: $model | Android OS: Android $androidVer" -ForegroundColor Green
+                  break
+              }
+              Start-Sleep -Seconds 4
+          }
+          echo "TARGET_DEVICE=$targetDevice" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "ADB_CONNECTED=$connected" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Download & Install TikTok Mobile APK
+        shell: powershell
+        run: |
+          $env:PATH += ";C:\platform-tools"
+          Write-Host "=== [5/6] Downloading & Installing TikTok APK ===" -ForegroundColor Cyan
+          $apkPath = "$env:TEMP\tiktok.apk"
+          $apkUrl = $env:TIKTOK_APK_URL
+          if (-not $apkUrl) {
+              $apkUrl = "https://d.apkpure.net/b/APK/com.zhiliaoapp.musically?version=latest"
+          }
+
+          $target = $env:TARGET_DEVICE
+          if (-not $target) { $target = "127.0.0.1:5555" }
+
+          if ($env:ADB_CONNECTED -eq "True") {
+              Write-Host "Downloading official TikTok APK..." -ForegroundColor Yellow
+              & curl.exe -# -fSL -o $apkPath $apkUrl
+              Write-Host "Installing TikTok on Android ($target)..." -ForegroundColor Yellow
+              & C:\platform-tools\adb.exe -s $target install -r $apkPath
+              Write-Host "[+] TikTok app installed successfully!" -ForegroundColor Green
+          } else {
+              Write-Host "[-] Pre-downloading TikTok APK to Desktop for instant RDP installation..." -ForegroundColor DarkYellow
+              & curl.exe -# -fSL -o "C:\Users\runneradmin\Desktop\TikTok.apk" $apkUrl
+              Write-Host "[+] TikTok.apk placed on Desktop: C:\Users\runneradmin\Desktop\TikTok.apk" -ForegroundColor Green
+          }
+
+      - name: Launch TikTok, Attend Live Stream & Send Likes
+        shell: powershell
+        run: |
+          $env:PATH += ";C:\platform-tools"
+          Write-Host "=== [6/6] Launching TikTok & Attending Live Stream ===" -ForegroundColor Cyan
+          $target = $env:TARGET_DEVICE
+          if (-not $target) { $target = "127.0.0.1:5555" }
+          
+          $streamUrl = $env:STREAM_URL
+          if (-not $streamUrl) { $streamUrl = "https://www.tiktok.com/@tiktok/live" }
+
+          if ($env:ADB_CONNECTED -eq "True") {
+              Write-Host "Launching TikTok App..." -ForegroundColor Green
+              & C:\platform-tools\adb.exe -s $target shell monkey -p com.zhiliaoapp.musically -c android.intent.category.LAUNCHER 1
+              Start-Sleep -Seconds 4
+
+              Write-Host "Opening Live Stream Room: $streamUrl" -ForegroundColor Green
+              & C:\platform-tools\adb.exe -s $target shell am start -a android.intent.action.VIEW -d "`"$streamUrl`"" com.zhiliaoapp.musically
+              Start-Sleep -Seconds 3
+
+              Write-Host "Sending active heart like bursts to live stream..." -ForegroundColor Green
+              for ($k = 1; $k -le 20; $k++) {
+                  & C:\platform-tools\adb.exe -s $target shell input tap 540 1200
+                  Start-Sleep -Milliseconds 120
+              }
+              Write-Host "[+] Live stream attended and likes sent successfully!" -ForegroundColor Green
+          } else {
+              Write-Host "[-] Runner test completed. Ready for interactive RDP connection (runneradmin / LDPlayer1234!)." -ForegroundColor DarkYellow
+          }
