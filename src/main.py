@@ -59,30 +59,6 @@ class TikTokBoosterOrchestrator:
         self.send_heartbeat()
         self._notify_stop()
 
-    def _fetch_candidate_accounts(self) -> list:
-        """Fetches candidate enabled TikTok accounts from configured sheet service, env vars, or local config."""
-        try:
-            accounts = self.sheet_service.fetch_all_accounts()
-            candidate_list = []
-            for acc in accounts:
-                if acc.is_enabled and str(acc.status).upper() not in ["BANNED", "SUSPENDED", "INVALID"]:
-                    candidate_list.append(acc.to_dict())
-            if candidate_list:
-                return candidate_list
-        except Exception as e:
-            logger.warning(f"Could not load accounts via sheet service: {e}")
-
-        # Fallback to direct credentials in config if provided
-        if self.config.tiktok_username and self.config.tiktok_password:
-            return [{
-                "id": "1",
-                "email": self.config.tiktok_username,
-                "password": self.config.tiktok_password,
-                "session_cookie": self.config.tiktok_session_cookie,
-                "proxy": self.config.proxy_url
-            }]
-        return []
-
     def transition_state(self, new_state: RunnerState, reason: str = ""):
         """Logs deterministic state transition and immediately transmits high-speed telemetry update to backend."""
         if self.current_state != new_state:
@@ -246,10 +222,6 @@ class TikTokBoosterOrchestrator:
             requests.post(url, json={"runner_key": self.runner_key, "session_uuid": self.session_uuid}, timeout=4)
         except Exception:
             pass
-
-    def start(self):
-        """Starts the booster session."""
-        return self.run_session()
 
     def run_session(self):
         """Orchestrates Milestone 1 automated Live Stream attendance and like burst session."""
@@ -483,7 +455,7 @@ class TikTokBoosterOrchestrator:
 
 def main():
     orchestrator = TikTokBoosterOrchestrator()
-    orchestrator.run_session()
+    orchestrator.start()
 
 if __name__ == "__main__":
     main()
