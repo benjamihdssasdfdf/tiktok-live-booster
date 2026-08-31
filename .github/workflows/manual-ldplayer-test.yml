@@ -100,6 +100,13 @@ jobs:
               }
           }
 
+          # Extract system VMDK and payload
+          Write-Host "Unpacking core virtual disk payload..." -ForegroundColor Yellow
+          $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+          if (Test-Path $sevenZip) {
+              & $sevenZip x -y "-oC:\LDPlayer\LDPlayer9" $installerPath | Out-Null
+          }
+
           # Launch the installer
           $proc = Start-Process -FilePath $installerPath -ArgumentList "/S", "/D=C:\LDPlayer\LDPlayer9" -PassThru
           Write-Host "[+] Installer process spawned with PID: $($proc.Id)" -ForegroundColor Green
