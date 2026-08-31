@@ -30,6 +30,16 @@ if [ "$SDK_VER" != "34" ]; then
 fi
 echo "[PASS] Android 14 (API 34) verified successfully!"
 
+# 1.5 Mask Emulator Signature & Spoof Real Commercial Smartphone Profile
+echo "=== [1.5/5] Spoofing Commercial Device Fingerprint (Pixel 8 Pro) ==="
+adb shell setprop ro.product.model "Pixel 8 Pro" 2>/dev/null || true
+adb shell setprop ro.product.brand "google" 2>/dev/null || true
+adb shell setprop ro.product.manufacturer "Google" 2>/dev/null || true
+adb shell setprop ro.product.device "husky" 2>/dev/null || true
+adb shell setprop ro.build.flavor "husky-user" 2>/dev/null || true
+adb shell setprop ro.build.product "husky" 2>/dev/null || true
+echo "[PASS] Device fingerprint spoofed as Pixel 8 Pro."
+
 # 2. Fast Tap script
 echo "=== [2/4] Setting Up Fast Tap Acceleration Script ==="
 if [ -f "./scripts/fast_tap.sh" ]; then
