@@ -1766,6 +1766,11 @@ apiRouter.post('/runners/dispatch', authenticateToken, requireRole(['admin', 'op
       return res.status(400).json({ success: false, error: 'No active GitHub fleet accounts available' });
     }
 
+    // Immediately purge all stale in-memory screenshots and telemetry for the new boost session
+    Object.keys(runnerTelemetryMap).forEach(key => delete runnerTelemetryMap[key]);
+    Object.keys(runnerControlQueueMap).forEach(key => delete runnerControlQueueMap[key]);
+    broadcastTelemetryUpdate('RUNNERS_CANCELLED');
+
     const dispatchPromises = dispatchTargets.map(async (acc) => {
       const targetRunnerCount = acc.max_runners || runner_count || 5;
       const tokenToUse = (acc.token && acc.token.trim().length > 10) ? acc.token.trim() : (process.env.GITHUB_TOKEN || '');
