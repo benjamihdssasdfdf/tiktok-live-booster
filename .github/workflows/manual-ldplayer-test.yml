@@ -1,0 +1,149 @@
+name: Fast Manual LDPlayer & Interactive RDP Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      enable_rdp:
+        description: 'Enable RDP (Remote Desktop) for interactive GUI access (true/false)'
+        required: false
+        default: 'false'
+      ngrok_auth_token:
+        description: 'Optional Ngrok Token for RDP Tunneling (leave blank if not using ngrok)'
+        required: false
+        default: ''
+      tailscale_auth_key:
+        description: 'Optional Tailscale Auth Key (leave blank if not using Tailscale)'
+        required: false
+        default: ''
+
+jobs:
+  fast-ldplayer-test:
+    name: Fast LDPlayer 9 Windows Test
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure Windows User & Enable RDP
+        shell: powershell
+        run: |
+          Write-Host "=== [1/5] Enabling Windows Remote Desktop (RDP) ===" -ForegroundColor Cyan
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+          
+          # Configure runneradmin user credentials
+          $Password = ConvertTo-SecureString "LDPlayer1234!" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $Password
+          Write-Host "[+] Windows RDP is configured." -ForegroundColor Green
+          Write-Host "    Username: runneradmin" -ForegroundColor Green
+          Write-Host "    Password: LDPlayer1234!" -ForegroundColor Green
+
+      - name: Setup Tailscale Tunnel (If Auth Key Provided)
+        if: ${{ github.event.inputs.tailscale_auth_key != '' }}
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ github.event.inputs.tailscale_auth_key }}
+
+      - name: Setup Ngrok RDP Tunnel (If Ngrok Token Provided)
+        if: ${{ github.event.inputs.ngrok_auth_token != '' }}
+        shell: powershell
+        run: |
+          Write-Host "=== Setting up Ngrok RDP Tunnel ===" -ForegroundColor Cyan
+          curl.exe -fSL -o ngrok.zip https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip
+          Expand-Archive ngrok.zip -DestinationPath . -Force
+          .\ngrok.exe config add-authtoken "${{ github.event.inputs.ngrok_auth_token }}"
+          Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp 3389 --log=stdout" -NoNewWindow
+          Start-Sleep -Seconds 5
+          try {
+              $tunnels = (Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels").tunnels
+              Write-Host "`n========================================================" -ForegroundColor Yellow
+              Write-Host ">>> CONNECT TO RDP VIA NGROK: $($tunnels[0].public_url)" -ForegroundColor Green
+              Write-Host ">>> Username: runneradmin" -ForegroundColor Green
+              Write-Host ">>> Password: LDPlayer1234!" -ForegroundColor Green
+              Write-Host "========================================================`n" -ForegroundColor Yellow
+          } catch {
+              Write-Host "[-] Could not retrieve ngrok tunnel URL: $_" -ForegroundColor DarkYellow
+          }
+
+      - name: Download & Extract LDPlayer 9
+        shell: powershell
+        run: |
+          Write-Host "=== [2/5] Downloading LDPlayer 9 (760MB) via curl.exe ===" -ForegroundColor Cyan
+          $installerPath = "$env:TEMP\LDPlayer9.exe"
+          & curl.exe -fSL --retry 3 --connect-timeout 30 -o $installerPath "https://encdn.ldmnq.com/download/package/LDPlayer9.exe"
+          
+          if (Test-Path $installerPath) {
+              $sizeMb = [math]::Round((Get-Item $installerPath).Length / 1MB, 2)
+              Write-Host "[+] Downloaded LDPlayer9.exe ($sizeMb MB)" -ForegroundColor Green
+          }
+
+          Write-Host "`n=== [3/5] Extracting & Installing LDPlayer 9 ===" -ForegroundColor Cyan
+          # 1. First attempt direct 7-Zip extraction (completely silent, zero popups)
+          $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+          if (Test-Path $sevenZip) {
+              Write-Host "Attempting 7-Zip direct extraction into C:\LDPlayer\LDPlayer9..." -ForegroundColor Yellow
+              & $sevenZip x -y "-oC:\LDPlayer\LDPlayer9" $installerPath | Out-Null
+          }
+
+          # 2. Check if console was unpacked or run silent NSIS installer
+          $foundLd = Get-ChildItem -Path @("C:\LDPlayer", "C:\leidian", "$env:ProgramFiles\LDPlayer", "$env:TEMP") -Filter "*console.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
+
+          if (-not $foundLd) {
+              Write-Host "Executing NSIS silent installer with /S /D=C:\LDPlayer\LDPlayer9..." -ForegroundColor Yellow
+              $proc = Start-Process -FilePath $installerPath -ArgumentList "/S", "/D=C:\LDPlayer\LDPlayer9" -PassThru -NoNewWindow
+              $proc.WaitForExit(90000)
+              Start-Sleep -Seconds 5
+              $foundLd = Get-ChildItem -Path @("C:\LDPlayer", "C:\leidian", "$env:ProgramFiles\LDPlayer", "$env:TEMP") -Filter "*console.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
+          }
+
+          if ($foundLd) {
+              Write-Host "[+] FOUND LDPlayer Console: $foundLd" -ForegroundColor Green
+              Write-Host "Launching LDPlayer instance 0..." -ForegroundColor Yellow
+              & $foundLd launch --index 0
+              Write-Host "[+] Launch command executed." -ForegroundColor Green
+          } else {
+              Write-Host "[-] LDPlayer console executable not found automatically." -ForegroundColor DarkYellow
+              if (Test-Path "C:\LDPlayer") {
+                  Write-Host "Directory contents of C:\LDPlayer:" -ForegroundColor Yellow
+                  Get-ChildItem "C:\LDPlayer" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 15 | ForEach-Object { Write-Host "   $($_.FullName)" }
+              }
+          }
+
+      - name: Verify ADB Connection & Device State
+        shell: powershell
+        run: |
+          Write-Host "=== [4/5] Verifying ADB Connection (127.0.0.1:5555) ===" -ForegroundColor Cyan
+          & adb start-server
+          
+          $connected = $false
+          for ($i = 1; $i -le 10; $i++) {
+              & adb connect 127.0.0.1:5555 | Out-Null
+              $devices = & adb devices
+              Write-Host "Attempt $i/10: $($devices -join ' ')"
+              if ($devices -match "127\.0\.0\.1:5555\s+device") {
+                  $connected = $true
+                  Write-Host "[+] LDPlayer Android is online and ready over ADB!" -ForegroundColor Green
+                  $model = & adb -s 127.0.0.1:5555 shell getprop ro.product.model
+                  $androidVer = & adb -s 127.0.0.1:5555 shell getprop ro.build.version.release
+                  Write-Host "    Model: $model" -ForegroundColor Green
+                  Write-Host "    Android Version: $androidVer" -ForegroundColor Green
+                  break
+              }
+              Start-Sleep -Seconds 5
+          }
+
+      - name: Hold Open for Interactive Testing (If Enabled)
+        if: ${{ github.event.inputs.enable_rdp == 'true' || github.event.inputs.ngrok_auth_token != '' || github.event.inputs.tailscale_auth_key != '' }}
+        shell: powershell
+        run: |
+          Write-Host "=== [5/5] Session Hold-Open for Interactive Remote Testing ===" -ForegroundColor Cyan
+          Write-Host ">>> Runner is holding open for 45 minutes." -ForegroundColor Green
+          Write-Host ">>> Connect via RDP: Username: runneradmin | Password: LDPlayer1234!" -ForegroundColor Green
+          $timeout = [DateTime]::UtcNow.AddMinutes(45)
+          while ([DateTime]::UtcNow -lt $timeout) {
+              $devices = & adb devices
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Device Status: $($devices -join ' ')"
+              Start-Sleep -Seconds 30
+          }
