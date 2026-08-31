@@ -23,6 +23,10 @@ on:
         description: 'VPN Provider (none, nordvpn, pia)'
         required: false
         default: 'none'
+      emulator_provider:
+        description: 'Android Emulator Provider (avd, ldplayer)'
+        required: false
+        default: 'avd'
       run_vpn_tests:
         description: 'Run comprehensive PIA VPN & Android Egress Integration Tests (true/false)'
         required: false
@@ -44,6 +48,7 @@ jobs:
 
   launch-mobile-viewers:
     needs: generate-matrix
+    if: ${{ github.event.inputs.emulator_provider != 'ldplayer' }}
     name: Milestone 1 Android 14 Runner #${{ matrix.runner_id }}
     runs-on: ubuntu-latest
     strategy:
@@ -142,5 +147,60 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: stream-snapshot-runner-${{ matrix.runner_id }}
+          path: last_stream_view.png
+          if-no-files-found: ignore
+
+  launch-ldplayer-viewers:
+    needs: generate-matrix
+    if: ${{ github.event.inputs.emulator_provider == 'ldplayer' }}
+    name: Milestone 2 LDPlayer Runner #${{ matrix.runner_id }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner_id: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Execute LDPlayer Automation Session
+        shell: powershell
+        run: |
+          powershell -ExecutionPolicy Bypass -File scripts/run_ldplayer_session.ps1
+        env:
+          RUNNER_INDEX: ${{ matrix.runner_id }}
+          STREAM_URL: ${{ github.event.inputs.stream_url }}
+          DURATION_MIN: ${{ github.event.inputs.duration_minutes }}
+          LIKES_RATE: ${{ github.event.inputs.likes_per_minute }}
+          EMULATOR_PROVIDER: 'ldplayer'
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SHEET_NAME: ${{ secrets.GOOGLE_SHEET_NAME || 'Accounts' }}
+          GOOGLE_SHEET_CSV_URL: ${{ secrets.GOOGLE_SHEET_CSV_URL }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          VPN_PROVIDER: ${{ github.event.inputs.vpn_provider }}
+          VPN_TOKEN: ${{ secrets.VPN_TOKEN }}
+          PIA_USER: ${{ secrets.PIA_USER }}
+          PIA_PASS: ${{ secrets.PIA_PASS }}
+          TIKTOK_APK_URL: ${{ secrets.TIKTOK_APK_URL || 'https://d.apkpure.net/b/APK/com.zhiliaoapp.musically?version=latest' }}
+          TIKTOK_BOOSTER_BACKEND_URL: ${{ secrets.TIKTOK_BOOSTER_BACKEND_URL || secrets.FGOS_BACKEND_URL || 'https://api.fgos.site/tiktok' }}
+          FGOS_BACKEND_URL: ${{ secrets.FGOS_BACKEND_URL || 'https://api.fgos.site/tiktok' }}
+
+      - name: Upload Stream Verification Snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ldplayer-snapshot-runner-${{ matrix.runner_id }}
           path: last_stream_view.png
           if-no-files-found: ignore
