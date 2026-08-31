@@ -90,9 +90,9 @@ jobs:
           Write-Host "Executables found inside C:\LDPlayer:" -ForegroundColor Green
           Get-ChildItem "C:\LDPlayer" -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "   $($_.FullName)" }
           
-          # Attempt silent execution with standard NSIS flags via cmd.exe
-          Write-Host "`nExecuting silent setup via cmd.exe..." -ForegroundColor Yellow
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$installerPath /S /D=C:\LDPlayer\LDPlayer9`"" -Wait -NoNewWindow
+          # Attempt unattended execution with standard NSIS silent flags
+          Write-Host "`nLaunching unattended setup..." -ForegroundColor Yellow
+          Start-Process -FilePath $installerPath -ArgumentList "/S", "/D=C:\LDPlayer\LDPlayer9" -NoNewWindow
           
           # Search for console or player executable across all standard locations
           $searchDirs = @("C:\LDPlayer\LDPlayer9", "C:\LDPlayer", "C:\leidian\LDPlayer9", "C:\leidian", "$env:ProgramFiles\LDPlayer9", "${env:ProgramFiles(x86)}\LDPlayer9", "$env:ProgramFiles\leidian", "${env:ProgramFiles(x86)}\leidian")
