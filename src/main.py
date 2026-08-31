@@ -453,9 +453,13 @@ class TikTokBoosterOrchestrator:
 
             time.sleep(0.3)
 
+    def start(self):
+        """Starts the booster session."""
+        self.run_session()
+
 def main():
     orchestrator = TikTokBoosterOrchestrator()
-    orchestrator.start()
+    orchestrator.run_session()
 
 if __name__ == "__main__":
     main()
