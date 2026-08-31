@@ -397,10 +397,15 @@ class TikTokBoosterOrchestrator:
         self.adb.dismiss_popups()
 
         if self.adb.is_login_or_signup_screen():
-            logger.error("[-] Screen is on login/signup page. Live stream cannot be opened.")
-            self.transition_state(RunnerState.LOGIN_FAILED, reason="Live room blocked by Login/SignUp screen")
-            self.send_heartbeat(include_screenshot=True, reason="Live room blocked by login screen")
-            return
+            logger.info("Screen is on login/signup page. Auto-dismissing to enter Live Room...")
+            self.adb.dismiss_popups()
+            if self.adb.is_login_or_signup_screen():
+                self.adb.shell("input keyevent 4")
+                time.sleep(1)
+            # Re-trigger live room navigation intent
+            if self.config.stream_url:
+                self.adb.shell(f'am start -a android.intent.action.VIEW -d "{self.config.stream_url}" {self.adb.package_name}')
+                time.sleep(2)
 
         if self.adb.is_live_stream_active():
             self.transition_state(RunnerState.WATCHING, reason="TikTok Live stream player confirmed active and receiving video")
