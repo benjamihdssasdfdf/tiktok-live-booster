@@ -28,7 +28,7 @@ jobs:
       - name: Configure Windows User & Enable RDP
         shell: powershell
         run: |
-          Write-Host "=== [1/5] Enabling Windows Remote Desktop (RDP) ===" -ForegroundColor Cyan
+          Write-Host "=== [1/5] Configuring Windows Remote Desktop (RDP) ===" -ForegroundColor Cyan
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
@@ -82,7 +82,7 @@ jobs:
               Write-Host "[-] Could not retrieve ngrok tunnel URL: $_" -ForegroundColor DarkYellow
           }
 
-      - name: Download & Extract LDPlayer 9 with Live Progress Bar
+      - name: Download LDPlayer 9 & Prepare Environment
         shell: powershell
         run: |
           $env:PATH += ";C:\platform-tools"
@@ -96,27 +96,41 @@ jobs:
           $sizeMb = [math]::Round((Get-Item $installerPath).Length / 1MB, 2)
           Write-Host "[+] LDPlayer9.exe downloaded ($sizeMb MB)" -ForegroundColor Green
 
-          Write-Host "`n=== [4/5] Extracting LDPlayer 9 with Live Progress ===" -ForegroundColor Cyan
-          $sevenZip = "C:\Program Files\7-Zip\7z.exe"
-          if (Test-Path $sevenZip) {
-              Write-Host "Extracting archive into C:\LDPlayer\LDPlayer9 (showing live extraction progress)..." -ForegroundColor Yellow
-              & $sevenZip x -y -bsp1 "-oC:\LDPlayer\LDPlayer9" $installerPath
+          # Copy installer to runneradmin Desktop for easy 1-click access via RDP
+          $desktopPath = "C:\Users\runneradmin\Desktop"
+          if (Test-Path $desktopPath) {
+              Copy-Item $installerPath -Destination "$desktopPath\LDPlayer9_Installer.exe" -Force
+              Write-Host "[+] Copied installer to Desktop: $desktopPath\LDPlayer9_Installer.exe" -ForegroundColor Green
           }
 
-          # Search for executables recursively
-          $foundLd = Get-ChildItem -Path @("C:\LDPlayer", "C:\leidian", "$env:ProgramFiles\LDPlayer", "$env:TEMP") -Filter "*console.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
-          if (-not $foundLd) {
-              $foundLd = Get-ChildItem -Path @("C:\LDPlayer", "C:\leidian", "$env:ProgramFiles\LDPlayer", "$env:TEMP") -Filter "*player.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
+          Write-Host "`n=== [4/5] Launching Silent LDPlayer Setup ===" -ForegroundColor Cyan
+          Write-Host "Starting unattended installer process..." -ForegroundColor Yellow
+          $proc = Start-Process -FilePath $installerPath -ArgumentList "/S", "/D=C:\LDPlayer\LDPlayer9" -PassThru -NoNewWindow
+          $proc.WaitForExit(60000)
+
+          # Search in targeted installation directories (instant, no slow crawling)
+          $searchDirs = @("C:\LDPlayer\LDPlayer9", "C:\LDPlayer", "C:\leidian\LDPlayer9", "C:\leidian", "$env:ProgramFiles\LDPlayer9", "${env:ProgramFiles(x86)}\LDPlayer9")
+          $foundLd = $null
+          foreach ($dir in $searchDirs) {
+              if (Test-Path $dir) {
+                  $candidate = Get-ChildItem -Path $dir -Filter "*console.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
+                  if (-not $candidate) {
+                      $candidate = Get-ChildItem -Path $dir -Filter "*player.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
+                  }
+                  if ($candidate) {
+                      $foundLd = $candidate
+                      break
+                  }
+              }
           }
 
           if ($foundLd) {
-              Write-Host "`n[+] FOUND LDPlayer Executable: $foundLd" -ForegroundColor Green
+              Write-Host "[+] FOUND LDPlayer Executable: $foundLd" -ForegroundColor Green
               Write-Host "Launching instance 0..." -ForegroundColor Yellow
               Start-Process -FilePath $foundLd -ArgumentList "launch --index 0" -NoNewWindow
               Write-Host "[+] Launch command dispatched!" -ForegroundColor Green
           } else {
-              Write-Host "`n[-] Executables found under C:\LDPlayer:" -ForegroundColor Yellow
-              Get-ChildItem "C:\LDPlayer" -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "   $($_.FullName)" }
+              Write-Host "[-] LDPlayer executable will be available when installer finishes or via RDP." -ForegroundColor DarkYellow
           }
 
       - name: Verify ADB Connection & Device State
@@ -127,10 +141,10 @@ jobs:
           & C:\platform-tools\adb.exe start-server
           
           $connected = $false
-          for ($i = 1; $i -le 12; $i++) {
+          for ($i = 1; $i -le 10; $i++) {
               & C:\platform-tools\adb.exe connect 127.0.0.1:5555 | Out-Null
               $devices = & C:\platform-tools\adb.exe devices
-              Write-Host "Poll [$i/12] Device status: $($devices -join ' ')"
+              Write-Host "Poll [$i/10] Device status: $($devices -join ' ')"
               if ($devices -match "127\.0\.0\.1:5555\s+device") {
                   $connected = $true
                   Write-Host "`n========================================================" -ForegroundColor Green
