@@ -28,78 +28,158 @@ jobs:
       - name: Configure Windows User & Enable RDP
         shell: powershell
         run: |
-          Write-Host "=== 1. Enabling Windows Remote Desktop (RDP) ===" -ForegroundColor Cyan
+          Write-Host "=== [1/5] Configuring Windows Remote Desktop (RDP) ===" -ForegroundColor Cyan
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           
-          # Set password for runneradmin user
+          # Configure runneradmin user credentials
           $Password = ConvertTo-SecureString "LDPlayer1234!" -AsPlainText -Force
           Set-LocalUser -Name "runneradmin" -Password $Password
-          Write-Host "[+] Windows RDP is enabled. Username: runneradmin | Password: LDPlayer1234!" -ForegroundColor Green
+          Write-Host "[+] Windows RDP is configured." -ForegroundColor Green
+          Write-Host "    Username: runneradmin" -ForegroundColor Green
+          Write-Host "    Password: LDPlayer1234!" -ForegroundColor Green
 
-      - name: Setup Tailscale Tunnel (If Auth Key Provided)
-        if: ${{ github.event.inputs.tailscale_auth_key != '' }}
-        uses: tailscale/github-action@v2
-        with:
-          authkey: ${{ github.event.inputs.tailscale_auth_key }}
-
-      - name: Setup Ngrok RDP Tunnel (If Ngrok Token Provided)
-        if: ${{ github.event.inputs.ngrok_auth_token != '' }}
+      - name: Install Android Platform-Tools (ADB)
         shell: powershell
         run: |
-          Write-Host "=== Setting up Ngrok RDP Tunnel ===" -ForegroundColor Cyan
-          curl.exe -fSL -o ngrok.zip https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip
-          Expand-Archive ngrok.zip -DestinationPath . -Force
-          .\ngrok.exe config add-authtoken "${{ github.event.inputs.ngrok_auth_token }}"
-          Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp 3389 --log=stdout" -NoNewWindow
-          Start-Sleep -Seconds 5
-          $tunnels = (Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels").tunnels
-          Write-Host "`n========================================================" -ForegroundColor Yellow
-          Write-Host ">>> CONNECT TO RDP VIA NGROK: $($tunnels[0].public_url)" -ForegroundColor Green
-          Write-Host ">>> Username: runneradmin" -ForegroundColor Green
-          Write-Host ">>> Password: LDPlayer1234!" -ForegroundColor Green
-          Write-Host "========================================================`n" -ForegroundColor Yellow
+          Write-Host "=== [2/5] Installing Android Platform-Tools (ADB) ===" -ForegroundColor Cyan
+          $adbZip = "$env:TEMP\platform-tools.zip"
+          if (-not (Test-Path "C:\platform-tools\adb.exe")) {
+              Write-Host "Downloading Google Platform-Tools..." -ForegroundColor Yellow
+              & curl.exe -# -fSL -o $adbZip "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
+              Expand-Archive -Path $adbZip -DestinationPath "C:\" -Force
+          }
+          Write-Host "[+] ADB is ready at C:\platform-tools\adb.exe" -ForegroundColor Green
+          echo "C:\platform-tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $env:PATH += ";C:\platform-tools"
+          & C:\platform-tools\adb.exe version
 
-      - name: Download & Launch LDPlayer 9
+      - name: Download & Launch LDPlayer 9 Automation
         shell: powershell
         run: |
-          Write-Host "=== 2. Downloading & Installing LDPlayer 9 ===" -ForegroundColor Cyan
+          $env:PATH += ";C:\platform-tools"
+          Write-Host "=== [3/5] Downloading LDPlayer 9 (760MB) ===" -ForegroundColor Cyan
           $installerPath = "$env:TEMP\LDPlayer9.exe"
-          & curl.exe -fSL --retry 3 -o $installerPath "https://encdn.ldmnq.com/download/package/LDPlayer9.exe"
           
-          # Try automated silent installation
-          Write-Host "Running automated installer..." -ForegroundColor Yellow
-          $proc = Start-Process -FilePath $installerPath -ArgumentList "/S", "-s", "-path", "C:\LDPlayer\LDPlayer9" -PassThru -NoNewWindow
-          $proc.WaitForExit(90000)
+          if (-not (Test-Path $installerPath)) {
+              & curl.exe -# -fSL --retry 3 --connect-timeout 30 -o $installerPath "https://encdn.ldmnq.com/download/package/LDPlayer9.exe"
+          }
           
-          # Search for console executable
-          $foundLd = Get-ChildItem -Path @("C:\LDPlayer", "C:\leidian", "$env:ProgramFiles\LDPlayer", "$env:TEMP") -Filter "*console.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
-          
-          if ($foundLd) {
-              Write-Host "[+] Found LDPlayer Console: $foundLd" -ForegroundColor Green
-              Write-Host "Launching instance 0..." -ForegroundColor Yellow
-              & $foundLd launch --index 0
-          } else {
-              Write-Host "[-] Console not found automatically. If RDP is enabled, you can run $installerPath directly on screen!" -ForegroundColor DarkYellow
+          $sizeMb = [math]::Round((Get-Item $installerPath).Length / 1MB, 2)
+          Write-Host "[+] LDPlayer9.exe downloaded ($sizeMb MB)" -ForegroundColor Green
+
+          # Copy installer to runneradmin Desktop
+          $desktopPath = "C:\Users\runneradmin\Desktop"
+          if (Test-Path $desktopPath) {
+              Copy-Item $installerPath -Destination "$desktopPath\LDPlayer9_Installer.exe" -Force
           }
 
-      - name: Verify ADB Connection
+          Write-Host "`n=== [4/5] Launching Installer with Background Window Automation ===" -ForegroundColor Cyan
+          
+          # Start background Win32 Clicker
+          $clicker = Start-Job -ScriptBlock {
+              Add-Type @"
+                  using System;
+                  using System.Runtime.InteropServices;
+                  public class Win32 {
+                      [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+                      [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
+                  }
+"@
+              for ($i = 0; $i -lt 40; $i++) {
+                  Start-Sleep -Seconds 1
+                  $procs = Get-Process | Where-Object { $_.ProcessName -match "LDPlayer|dnplayer|leidian|setup" }
+                  foreach ($p in $procs) {
+                      if ($p.MainWindowHandle -and $p.MainWindowHandle -ne [IntPtr]::Zero) {
+                          [Win32]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
+                          [Win32]::keybd_event(0x0D, 0, 0, 0)
+                          [Win32]::keybd_event(0x0D, 0, 2, 0)
+                      }
+                  }
+              }
+          }
+
+          # Extract system VMDK and payload
+          Write-Host "Unpacking core virtual disk payload..." -ForegroundColor Yellow
+          $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+          if (Test-Path $sevenZip) {
+              & $sevenZip x -y "-oC:\LDPlayer\LDPlayer9" $installerPath | Out-Null
+          }
+
+          # Launch the installer
+          $proc = Start-Process -FilePath $installerPath -ArgumentList "/S", "/D=C:\LDPlayer\LDPlayer9" -PassThru
+          Write-Host "[+] Installer process spawned with PID: $($proc.Id)" -ForegroundColor Green
+
+          # Wait for installation files to appear (up to 45s)
+          $searchDirs = @("C:\LDPlayer\LDPlayer9", "C:\LDPlayer", "C:\leidian\LDPlayer9", "C:\leidian", "$env:ProgramFiles\LDPlayer9", "${env:ProgramFiles(x86)}\LDPlayer9", "$env:ProgramFiles\leidian", "${env:ProgramFiles(x86)}\leidian")
+          $foundLd = $null
+          for ($t = 0; $t -lt 15; $t++) {
+              foreach ($dir in $searchDirs) {
+                  if (Test-Path $dir) {
+                      $candidate = Get-ChildItem -Path $dir -Filter "*console.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
+                      if (-not $candidate) {
+                          $candidate = Get-ChildItem -Path $dir -Filter "*player.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
+                      }
+                      if ($candidate) {
+                          $foundLd = $candidate
+                          break
+                      }
+                  }
+              }
+              if ($foundLd) { break }
+              Start-Sleep -Seconds 3
+          }
+
+          Stop-Job $clicker -ErrorAction SilentlyContinue
+          Remove-Job $clicker -ErrorAction SilentlyContinue
+
+          if ($foundLd) {
+              Write-Host "`n[+] FOUND LDPlayer Executable at: $foundLd" -ForegroundColor Green
+              Write-Host "Launching instance 0..." -ForegroundColor Yellow
+              Start-Process -FilePath $foundLd -ArgumentList "launch --index 0" -NoNewWindow
+              Write-Host "[+] Instance 0 launch command dispatched!" -ForegroundColor Green
+          } else {
+              Write-Host "[-] Direct console executable not found yet. Testing ADB connectivity..." -ForegroundColor DarkYellow
+          }
+
+      - name: Verify ADB Connection & Device State
         shell: powershell
         run: |
-          Write-Host "=== 3. Checking ADB Connection ===" -ForegroundColor Cyan
-          & adb connect 127.0.0.1:5555
-          & adb devices -l
+          $env:PATH += ";C:\platform-tools"
+          Write-Host "=== [5/5] Polling ADB Device Connection (127.0.0.1:5555) ===" -ForegroundColor Cyan
+          & C:\platform-tools\adb.exe start-server
+          
+          $connected = $false
+          for ($i = 1; $i -le 15; $i++) {
+              & C:\platform-tools\adb.exe connect 127.0.0.1:5555 | Out-Null
+              $devices = & C:\platform-tools\adb.exe devices
+              Write-Host "Poll [$i/15] Device status: $($devices -join ' ')"
+              if ($devices -match "127\.0\.0\.1:5555\s+device") {
+                  $connected = $true
+                  Write-Host "`n========================================================" -ForegroundColor Green
+                  Write-Host "[+] SUCCESS: LDPlayer Android is ONLINE and CONNECTED!" -ForegroundColor Green
+                  $model = & C:\platform-tools\adb.exe -s 127.0.0.1:5555 shell getprop ro.product.model
+                  $androidVer = & C:\platform-tools\adb.exe -s 127.0.0.1:5555 shell getprop ro.build.version.release
+                  Write-Host "    Device Model: $model" -ForegroundColor Green
+                  Write-Host "    Android OS: Android $androidVer" -ForegroundColor Green
+                  Write-Host "========================================================`n" -ForegroundColor Green
+                  break
+              }
+              Start-Sleep -Seconds 5
+          }
 
-      - name: Keep-Alive for Interactive Testing (If RDP Enabled)
+      - name: Hold Open for Interactive Testing (If Enabled)
         if: ${{ github.event.inputs.enable_rdp == 'true' || github.event.inputs.ngrok_auth_token != '' || github.event.inputs.tailscale_auth_key != '' }}
         shell: powershell
         run: |
-          Write-Host "`n>>> Runner is now holding open for 60 minutes for interactive testing." -ForegroundColor Green
-          Write-Host ">>> Connect via RDP and interact with LDPlayer directly!" -ForegroundColor Green
-          $timeout = [DateTime]::UtcNow.AddMinutes(60)
+          $env:PATH += ";C:\platform-tools"
+          Write-Host "=== Session Hold-Open for Interactive Remote Testing ===" -ForegroundColor Cyan
+          Write-Host ">>> Runner is holding open for 45 minutes." -ForegroundColor Green
+          Write-Host ">>> Connect via RDP: Username: runneradmin | Password: LDPlayer1234!" -ForegroundColor Green
+          $timeout = [DateTime]::UtcNow.AddMinutes(45)
           while ([DateTime]::UtcNow -lt $timeout) {
-              $devices = & adb devices
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Device Status: $($devices -join ' ')"
+              $devices = & C:\platform-tools\adb.exe devices
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Live Device Status: $($devices -join ' ')"
               Start-Sleep -Seconds 30
           }
