@@ -247,6 +247,10 @@ class TikTokBoosterOrchestrator:
         except Exception:
             pass
 
+    def start(self):
+        """Starts the booster session."""
+        return self.run_session()
+
     def run_session(self):
         """Orchestrates Milestone 1 automated Live Stream attendance and like burst session."""
         console.rule("[bold magenta]TikTok Booster Android 14 Runner Engine[/bold magenta]")
@@ -479,7 +483,7 @@ class TikTokBoosterOrchestrator:
 
 def main():
     orchestrator = TikTokBoosterOrchestrator()
-    orchestrator.start()
+    orchestrator.run_session()
 
 if __name__ == "__main__":
     main()
