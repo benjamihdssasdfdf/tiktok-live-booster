@@ -23,6 +23,10 @@ on:
         description: 'VPN Provider (none, nordvpn, pia)'
         required: false
         default: 'none'
+      run_vpn_tests:
+        description: 'Run comprehensive PIA VPN & Android Egress Integration Tests (true/false)'
+        required: false
+        default: 'false'
 
 jobs:
   generate-matrix:
@@ -79,6 +83,26 @@ jobs:
             ~/.android/adb*
           key: avd-34-x86_64-v2
 
+      # ───────── OPENVPN & PIA CONFIGS ─────────
+      - name: Install OpenVPN & Download PIA Configs
+        if: ${{ github.event.inputs.vpn_provider == 'pia' }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y openvpn unzip jq
+          sudo mkdir -p /etc/openvpn/pia
+          sudo curl -fSL -o /tmp/pia.zip https://www.privateinternetaccess.com/openvpn/openvpn.zip
+          sudo unzip -o /tmp/pia.zip -d /etc/openvpn/pia
+          sudo modprobe tun || true
+          
+          if [ -n "${{ secrets.PIA_USER }}" ]; then
+            echo "${{ secrets.PIA_USER }}" | sudo tee /etc/openvpn/auth.txt > /dev/null
+            printf '%s\n' '${{ secrets.PIA_PASS }}' | sudo tee -a /etc/openvpn/auth.txt > /dev/null
+            sudo chmod 600 /etc/openvpn/auth.txt
+          fi
+          
+          echo "OPENVPN_CONFIG_DIR=/etc/openvpn/pia" >> $GITHUB_ENV
+          echo "OPENVPN_AUTH_FILE=/etc/openvpn/auth.txt" >> $GITHUB_ENV
+
       - name: Make Scripts Executable
         run: chmod +x ./scripts/*.sh
 
@@ -103,7 +127,12 @@ jobs:
           GOOGLE_SHEET_CSV_URL: ${{ secrets.GOOGLE_SHEET_CSV_URL }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           VPN_PROVIDER: ${{ github.event.inputs.vpn_provider }}
+          RUN_VPN_TESTS: ${{ github.event.inputs.run_vpn_tests }}
           VPN_TOKEN: ${{ secrets.VPN_TOKEN }}
+          PIA_USER: ${{ secrets.PIA_USER }}
+          PIA_PASS: ${{ secrets.PIA_PASS }}
+          OPENVPN_CONFIG_DIR: /etc/openvpn/pia
+          OPENVPN_AUTH_FILE: /etc/openvpn/auth.txt
           TIKTOK_APK_URL: ${{ secrets.TIKTOK_APK_URL || 'https://d.apkpure.net/b/APK/com.zhiliaoapp.musically?version=latest' }}
           TIKTOK_BOOSTER_BACKEND_URL: ${{ secrets.TIKTOK_BOOSTER_BACKEND_URL || secrets.FGOS_BACKEND_URL || 'https://api.fgos.site/tiktok' }}
           FGOS_BACKEND_URL: ${{ secrets.FGOS_BACKEND_URL || 'https://api.fgos.site/tiktok' }}

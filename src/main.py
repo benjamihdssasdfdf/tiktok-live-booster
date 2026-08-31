@@ -135,6 +135,10 @@ class TikTokBoosterOrchestrator:
             "device_timestamp": datetime.utcnow().isoformat() + "Z"
         }
 
+        # Include structured VPN telemetry
+        if hasattr(self, 'vpn') and self.vpn:
+            payload.update(self.vpn.get_telemetry())
+
         try:
             res = requests.post(url, json=payload, timeout=6)
             if res.status_code == 200:
@@ -178,7 +182,6 @@ class TikTokBoosterOrchestrator:
                     success = True
                 elif action == "key":
                     keycode = int(cmd.get("keycode", 4))
-                    logger.info(f"Executing keyevent {keycode}")
                     self.adb.shell(f"input keyevent {keycode}")
                     success = True
                 elif action == "text" and cmd.get("text"):
@@ -193,12 +196,16 @@ class TikTokBoosterOrchestrator:
                     time.sleep(1)
                     self.adb.launch_live_stream(self.config.stream_url, self.config.room_id, self.config.stream_user)
                     success = True
-            except Exception as ex:
-                err_msg = str(ex)
-                logger.error(f"COMMAND_FAILED: {err_msg}")
+            except Exception as e:
+                err_msg = str(e)
+                logger.error(f"Failed to execute dashboard command {cmd_id}: {e}")
 
-            # Send Command Ack to PostgreSQL
-            self._ack_command(cmd_id, "EXECUTED" if success else "FAILED", err_msg)
+            # Send ack
+            try:
+                ack_url = f"{self.config.backend_url}/api/runners/{self.runner_key}/commands/{cmd_id}/ack"
+                requests.post(ack_url, json={"success": success, "error": err_msg}, timeout=3)
+            except Exception:
+                pass
 
     def _ack_command(self, cmd_id, status, error_message=None):
         if not cmd_id:
@@ -216,7 +223,8 @@ class TikTokBoosterOrchestrator:
         except Exception:
             pass
 
-    def start(self):
+    def run_session(self):
+        """Orchestrates Milestone 1 automated Live Stream attendance and like burst session."""
         console.rule("[bold magenta]TikTok Booster Android 14 Runner Engine[/bold magenta]")
         logger.info(f"Runner Key: {self.runner_key} | Session UUID: {self.session_uuid}")
         logger.info(f"Target Stream: {self.config.stream_url or self.config.stream_user or self.config.room_id}")
@@ -225,7 +233,11 @@ class TikTokBoosterOrchestrator:
 
         # 1. VPN Setup
         if self.config.vpn_provider != "none":
-            self.vpn.setup_vpn()
+            vpn_ok = self.vpn.setup_vpn()
+            if not vpn_ok and self.config.vpn_provider == "pia":
+                logger.error("[-] PIA VPN failed to connect. Halting runner to prevent unprotected traffic.")
+                self.transition_state(RunnerState.ERROR, reason="PIA VPN initialization failed")
+                sys.exit(1)
 
         # 2. ADB & Android 14 Connectivity
         self.transition_state(RunnerState.ADB_CONNECTING, reason="Establishing ADB connection to Android 14 AVD")
@@ -250,36 +262,93 @@ class TikTokBoosterOrchestrator:
         if not self.adb.ensure_app_installed():
             logger.warning("TikTok package is not installed. Proceeding with browser fallback.")
 
-        # 5. Dynamic Account Assignment & In-App Authentication
-        account = self._fetch_assigned_account()
-        if account:
-            acc_name = account.get("username") or account.get("email")
-            logger.info(f"[+] Assigned TikTok Account: {acc_name} (ID #{account.get('id')})")
+        # Verify initial emulator network egress
+        if self.config.vpn_provider != "none":
+            egress = self.vpn.verify_android_egress(self.adb)
+            if self.config.vpn_provider == "pia" and not egress.get("has_internet"):
+                logger.error("[-] Android emulator has no Internet connectivity through VPN. Halting.")
+                self.transition_state(RunnerState.ERROR, reason="Android emulator has no Internet via VPN")
+                sys.exit(1)
+
+        # 5. Dynamic Account Assignment & In-App Authentication with Account Rotation
+        candidate_accounts = self._fetch_candidate_accounts()
+        authenticated_account = None
+
+        if candidate_accounts and len(candidate_accounts) > 0:
+            logger.info(f"[+] Loaded {len(candidate_accounts)} candidate enabled account(s) for runner rotation pool.")
             
             def auth_callback(phase_name: str, phase_reason: str):
                 state_mapping = {
                     "STARTING": RunnerState.STARTING,
                     "LOGIN_REQUIRED": RunnerState.LOGIN_REQUIRED,
-                    "LOGIN_SUBMITTING": RunnerState.LOGIN_SUBMITTING,
+                    "LOGIN_STARTED": RunnerState.LOGIN_STARTED,
+                    "LOGIN_SUBMITTED": RunnerState.LOGIN_SUBMITTED,
+                    "LOGIN_VERIFYING": RunnerState.LOGIN_VERIFYING,
                     "2FA_REQUIRED": RunnerState.TWO_FA_REQUIRED,
                     "AUTHENTICATED": RunnerState.AUTHENTICATED,
+                    "LOGGED_IN": RunnerState.LOGGED_IN,
                     "LOGIN_FAILED": RunnerState.LOGIN_FAILED,
+                    "LOGIN_CHALLENGE": RunnerState.LOGIN_CHALLENGE,
+                    "LOGIN_RATE_LIMITED": RunnerState.LOGIN_RATE_LIMITED,
                     "LOGIN_BLOCKED": RunnerState.LOGIN_BLOCKED,
                 }
-                mapped_state = state_mapping.get(phase_name, RunnerState.APP_STARTED)
+                mapped_state = state_mapping.get(phase_name, RunnerState.LOGIN_REQUIRED)
                 self.transition_state(mapped_state, reason=f"{phase_name}: {phase_reason}")
                 self.send_heartbeat(include_screenshot=True, reason=f"{phase_name}: {phase_reason}")
 
-            auth_success = self.auto_login.authenticate_account(account, state_callback=auth_callback)
-            if not auth_success:
-                logger.error("[-] In-App authentication failed. Stopping session cleanly without proceeding to Live Stream.")
-                self.transition_state(RunnerState.LOGIN_FAILED, reason="Authentication failed: Application remains on login screen")
-                self.send_heartbeat(include_screenshot=True, reason="Authentication failed diagnostics snapshot")
+            for idx, account in enumerate(candidate_accounts):
+                acc_id = account.get("id")
+                acc_email = account.get("email") or account.get("username")
+                masked_email = f"{acc_email[:3]}***@{acc_email.split('@')[-1]}" if "@" in str(acc_email) else str(acc_email)
+                
+                logger.info(f"\n{'='*60}")
+                logger.info(f"🔄 [Account Rotation] Evaluating Candidate #{idx+1}/{len(candidate_accounts)}: {masked_email} (ID #{acc_id})")
+                logger.info(f"{'='*60}")
+
+                # 1. Rotate VPN IP for subsequent attempts to provide clean IP
+                if self.config.vpn_provider == "pia" and idx > 0:
+                    logger.info(f"Rotating PIA VPN IP for Candidate #{idx+1}...")
+                    self.vpn.rotate_vpn()
+                    self.vpn.verify_android_egress(self.adb)
+
+                # 2. Clean slate: Wipe app data
+                logger.info(f"Wiping TikTok cache and state for clean slate...")
+                self.adb.shell(f"pm clear {self.adb.package_name}")
+                time.sleep(2)
+
+                # 3. Set persistent device identity
+                dev_id = account.get("device_id") or f"dev_{acc_id}_{int(time.time())}"
+                self.adb.set_persistent_device_identity(dev_id)
+
+                # 4. Configure Proxy if assigned
+                if account.get("proxy"):
+                    self.adb.configure_proxy(account.get("proxy"))
+
+                # 5. Attempt login
+                curr_ip_label = f" (IP: {self.vpn.current_ip})" if self.vpn.current_ip else ""
+                self.transition_state(RunnerState.LOGIN_REQUIRED, reason=f"Starting login for candidate #{idx+1}: {masked_email}{curr_ip_label}")
+                auth_success = self.auto_login.authenticate_account(account, state_callback=auth_callback)
+
+                if auth_success:
+                    logger.info(f"🎉 [Account Rotation] SUCCESS: Account {masked_email} authenticated into main feed!")
+                    authenticated_account = account
+                    self.transition_state(RunnerState.LOGGED_IN, reason=f"Account {masked_email} authenticated into feed")
+                    self.send_heartbeat(include_screenshot=True, reason=f"Account {masked_email} authenticated")
+                    break
+                else:
+                    logger.warning(f"⚠️ [Account Rotation] Account {masked_email} did not authenticate ({self.current_state}). Recording outcome and rotating to next candidate...")
+                    self.send_heartbeat(include_screenshot=True, reason=f"Account {masked_email} login outcome: {self.current_state}")
+                    time.sleep(2)
+
+            if authenticated_account:
+                self._run_stream_session(account=authenticated_account)
+            else:
+                logger.error("[-] All candidate accounts in rotation pool failed or were rate-limited/challenged. Stopping session cleanly without proceeding to Live Stream.")
+                if self.current_state not in [RunnerState.LOGIN_RATE_LIMITED, RunnerState.LOGIN_CHALLENGE, RunnerState.TWO_FA_REQUIRED, RunnerState.LOGIN_FAILED]:
+                    self.transition_state(RunnerState.LOGIN_FAILED, reason="All candidate accounts failed authentication")
+                self.send_heartbeat(include_screenshot=True, reason="All candidate accounts failed authentication")
                 self._notify_stop()
                 return
-
-            self.transition_state(RunnerState.AUTHENTICATED, reason="Account authenticated into TikTok feed")
-            self._run_stream_session(account=account)
         else:
             logger.info("No dedicated account assigned in backend. Running in Guest Viewer mode.")
             self._run_stream_session(account=None)

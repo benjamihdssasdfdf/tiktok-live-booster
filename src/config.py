@@ -41,6 +41,10 @@ class AppConfig:
         self.vpn_provider: str = os.getenv("VPN_PROVIDER", "none").lower() # none, nordvpn, pia
         self.vpn_token: Optional[str] = os.getenv("VPN_TOKEN", None)
         self.vpn_country: str = os.getenv("VPN_COUNTRY", "United_States")
+        self.openvpn_config_dir: str = os.getenv("OPENVPN_CONFIG_DIR", "/etc/openvpn/pia")
+        self.openvpn_auth_file: str = os.getenv("OPENVPN_AUTH_FILE", "/etc/openvpn/auth.txt")
+        self.pia_user: Optional[str] = os.getenv("PIA_USER", None)
+        self.pia_pass: Optional[str] = os.getenv("PIA_PASS", None)
         self.http_proxy: Optional[str] = os.getenv("HTTP_PROXY", None)
         self.backend_url: str = (os.getenv("TIKTOK_BOOSTER_BACKEND_URL") or os.getenv("FGOS_BACKEND_URL") or "https://api.fgos.site/tiktok").rstrip('/')
         self.require_api_level: int = int(os.getenv("REQUIRE_API_LEVEL", "34"))

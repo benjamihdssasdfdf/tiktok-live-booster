@@ -47,8 +47,16 @@ if [ -f "./scripts/setup_scrcpy.sh" ]; then
     echo "[PASS] scrcpy-server v2.4 launched on port 27183."
 fi
 
-# 4. Run TikTok Booster Python Orchestrator
-echo "=== [4/4] Starting TikTok Booster Orchestrator ==="
+# 4. Optional Pre-Flight VPN & Android Egress Integration Verification
+if [ "${RUN_VPN_TESTS:-0}" = "1" ] || [ "${RUN_VPN_TESTS:-}" = "true" ] || [ "${TEST_MODE:-}" = "vpn" ]; then
+    echo "=== [4/5] Executing Full PIA VPN & Android Egress Integration Test Suite ==="
+    export PYTHONPATH="${PYTHONPATH:-.}:."
+    python -u tests/integration_vpn_network_test.py
+    echo "[PASS] All PIA VPN & Android egress integration tests completed successfully!"
+fi
+
+# 5. Run TikTok Booster Python Orchestrator
+echo "=== [5/5] Starting TikTok Booster Orchestrator ==="
 RUNNER_INDEX="${RUNNER_INDEX:-0}"
 STREAM_URL="${STREAM_URL:-https://www.tiktok.com/@tiktok/live}"
 DURATION_MIN="${DURATION_MIN:-60}"
