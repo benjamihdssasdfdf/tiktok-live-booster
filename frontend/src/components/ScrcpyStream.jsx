@@ -34,7 +34,7 @@ export default function ScrcpyStream({
   const [reconnectCount, setReconnectCount] = useState(0);
 
   // Authoritative status values
-  const isRunnerAlive = runnerTelemetry.state !== 'OFFLINE' && runnerTelemetry.state !== 'STOPPED' && runnerTelemetry.state !== 'UNREGISTERED';
+  const isRunnerAlive = runnerTelemetry.state !== 'OFFLINE' && runnerTelemetry.state !== 'STOPPED' && runnerTelemetry.state !== 'UNREGISTERED' && runnerTelemetry.heartbeat !== 'OFFLINE';
   const isAdbConnected = runnerTelemetry.adb_state === 'OK';
   const isAndroidReady = ['ANDROID_READY', 'STARTING', 'APP_STARTING', 'APP_STARTED', 'LOGIN_REQUIRED', 'LOGIN_SUBMITTING', '2FA_REQUIRED', 'AUTHENTICATED', 'OPENING_LIVE', 'TARGET_OPENING', 'TARGET_VERIFIED', 'WATCHING', 'RUNNING', 'RECOVERING'].includes(runnerTelemetry.state);
   const isTikTokRunning = runnerTelemetry.app_state === 'RUNNING' || ['APP_STARTED', 'LOGIN_REQUIRED', 'LOGIN_SUBMITTING', '2FA_REQUIRED', 'AUTHENTICATED', 'OPENING_LIVE', 'TARGET_OPENING', 'TARGET_VERIFIED', 'WATCHING', 'RUNNING'].includes(runnerTelemetry.state);
@@ -241,6 +241,25 @@ export default function ScrcpyStream({
     };
   }, [runnerKey, wsBaseUrl, token]);
 
+  // Purge frozen browser video buffer immediately when runner goes offline
+  useEffect(() => {
+    if (!isRunnerAlive) {
+      if (videoRef.current) {
+        try {
+          videoRef.current.pause();
+          videoRef.current.removeAttribute('src');
+          videoRef.current.load();
+        } catch (_) {}
+      }
+      if (jmuxerRef.current) {
+        try {
+          jmuxerRef.current.destroy();
+        } catch (_) {}
+        jmuxerRef.current = null;
+      }
+    }
+  }, [isRunnerAlive]);
+
   // 3. Pixel-Perfect Coordinate Mapping (Accounts for Letterboxing / Aspect Ratio / Stream Res)
   const calculateDeviceCoordinates = (clientX, clientY) => {
     if (!containerRef.current) return null;
@@ -425,14 +444,15 @@ export default function ScrcpyStream({
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ 
             width: 8, height: 8, borderRadius: '50%', 
-            background: streamState === 'LIVE' ? 'var(--accent-green)' : (streamState === 'RECONNECTING' ? '#FFA800' : 'var(--tiktok-cyan)'),
-            boxShadow: streamState === 'LIVE' ? '0 0 8px #00F59B' : 'none'
+            background: !isRunnerAlive ? '#FF6B8B' : (streamState === 'LIVE' ? 'var(--accent-green)' : (streamState === 'RECONNECTING' ? '#FFA800' : 'var(--tiktok-cyan)')),
+            boxShadow: (isRunnerAlive && streamState === 'LIVE') ? '0 0 8px #00F59B' : 'none'
           }} />
-          <span style={{ fontWeight: 700, color: streamState === 'LIVE' ? 'var(--accent-green)' : (streamState === 'RECONNECTING' ? '#FFA800' : 'var(--tiktok-cyan)') }}>
-            {streamState === 'LIVE' && `LIVE SCREEN • ${streamDims.width}x${streamDims.height}`}
-            {streamState === 'CONNECTING' && `INITIALIZING STREAM...`}
-            {streamState === 'RECONNECTING' && `RECONNECTING (#${reconnectCount})...`}
-            {streamState === 'DISCONNECTED' && `STREAM PAUSED`}
+          <span style={{ fontWeight: 700, color: !isRunnerAlive ? '#FF6B8B' : (streamState === 'LIVE' ? 'var(--accent-green)' : (streamState === 'RECONNECTING' ? '#FFA800' : 'var(--tiktok-cyan)')) }}>
+            {!isRunnerAlive && 'RUNNER OFFLINE • NO FEED'}
+            {isRunnerAlive && streamState === 'LIVE' && `LIVE SCREEN • ${streamDims.width}x${streamDims.height}`}
+            {isRunnerAlive && streamState === 'CONNECTING' && `INITIALIZING STREAM...`}
+            {isRunnerAlive && streamState === 'RECONNECTING' && `RECONNECTING (#${reconnectCount})...`}
+            {isRunnerAlive && streamState === 'DISCONNECTED' && `STREAM PAUSED`}
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -500,7 +520,7 @@ export default function ScrcpyStream({
           />
         ))}
 
-        {/* Video Canvas Element */}
+        {/* Video Canvas Element - strictly active when live and online */}
         <video 
           ref={videoRef}
           muted
@@ -511,19 +531,29 @@ export default function ScrcpyStream({
             height: '100%',
             objectFit: 'contain',
             pointerEvents: 'none',
-            display: streamState === 'LIVE' ? 'block' : 'none'
+            display: (isRunnerAlive && streamState === 'LIVE') ? 'block' : 'none'
           }}
         />
 
-        {/* Live Loading / Waiting Indicator when Not Live */}
-        {streamState !== 'LIVE' && (
+        {/* Explicit Offline or Waiting State */}
+        {!isRunnerAlive ? (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, color: '#FF6B8B', padding: 24, textAlign: 'center' }}>
+            <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'rgba(254, 44, 85, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>
+              ⏹️
+            </div>
+            <span style={{ fontSize: 13, fontWeight: 800 }}>Runner is Offline</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              The cloud Android session is terminated. No active live video feed.
+            </span>
+          </div>
+        ) : streamState !== 'LIVE' ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, color: 'var(--text-muted)', padding: 20 }}>
             <Activity className="animate-spin" size={32} color="var(--tiktok-cyan)" />
             <span style={{ fontSize: 12, fontWeight: 600 }}>
               {isAndroidReady ? 'Connecting Live Stream Transport...' : 'Waiting for Android 14 AVD Boot...'}
             </span>
           </div>
-        )}
+        ) : null}
       </div>
 
       {/* Android Hardware Navigation Bar (Back, Home, App Switcher) */}
