@@ -31,12 +31,7 @@ class AppConfig:
         self.batch_size: int = int(os.getenv("BATCH_SIZE", "1"))
         self.runner_id: str = os.getenv("RUNNER_ID", f"runner-{self.runner_index}")
         
-        # Android / ADB / Emulator Settings
-        self.emulator_provider: str = os.getenv("EMULATOR_PROVIDER", "avd").lower().strip()
-        self.ldplayer_instance: int = int(os.getenv("LDPLAYER_INSTANCE", "0"))
-        self.ldplayer_path: Optional[str] = os.getenv("LDPLAYER_PATH", None)
-        self.ldplayer_adb_host: str = os.getenv("LDPLAYER_ADB_HOST", "127.0.0.1")
-        self.ldplayer_adb_port: Optional[int] = int(os.getenv("LDPLAYER_ADB_PORT")) if os.getenv("LDPLAYER_ADB_PORT") else None
+        # Android / ADB Settings
         self.adb_device_id: Optional[str] = os.getenv("ADB_DEVICE_ID", None)
         self.tiktok_package: str = os.getenv("TIKTOK_PACKAGE", "com.zhiliaoapp.musically")
         self.tiktok_apk_url: Optional[str] = os.getenv("TIKTOK_APK_URL", None)
@@ -70,8 +65,6 @@ class AppConfig:
         parser.add_argument("--sheet-id", type=str, help="Google Sheet ID")
         parser.add_argument("--sheet-csv-url", type=str, help="Published Google Sheet CSV export URL")
         parser.add_argument("--device-id", type=str, help="ADB Device ID / Serial")
-        parser.add_argument("--emulator-provider", type=str, help="Emulator provider (avd or ldplayer)")
-        parser.add_argument("--ldplayer-instance", type=int, help="LDPlayer instance index")
         parser.add_argument("--backend-url", type=str, help="TikTok Booster Central Backend API Base URL")
         
         args, _ = parser.parse_known_args()
@@ -79,10 +72,6 @@ class AppConfig:
         config = cls()
         if args.backend_url:
             config.backend_url = args.backend_url.rstrip('/')
-        if args.emulator_provider:
-            config.emulator_provider = args.emulator_provider.lower().strip()
-        if args.ldplayer_instance is not None:
-            config.ldplayer_instance = args.ldplayer_instance
         if args.stream_url:
             config.stream_url = args.stream_url
         if args.stream_user:

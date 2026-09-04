@@ -223,10 +223,6 @@ class TikTokBoosterOrchestrator:
         except Exception:
             pass
 
-    def start(self):
-        """Starts the booster session."""
-        return self.run_session()
-
     def run_session(self):
         """Orchestrates Milestone 1 automated Live Stream attendance and like burst session."""
         console.rule("[bold magenta]TikTok Booster Android 14 Runner Engine[/bold magenta]")
@@ -376,25 +372,6 @@ class TikTokBoosterOrchestrator:
             logger.debug(f"Backend account assignment fetch note: {e}")
         return None
 
-    def _fetch_candidate_accounts(self) -> list:
-        """Fetches candidate enabled TikTok accounts for rotation from sheet_service or central backend."""
-        accounts = []
-        try:
-            if hasattr(self, 'sheet_service') and self.sheet_service:
-                sheet_accs = self.sheet_service.get_enabled_accounts()
-                if sheet_accs and len(sheet_accs) > 0:
-                    logger.info(f"[+] Loaded {len(sheet_accs)} candidate account(s) from Google Sheet service.")
-                    accounts.extend(sheet_accs)
-        except Exception as e:
-            logger.debug(f"Sheet candidate fetch notice: {e}")
-
-        if not accounts:
-            assigned = self._fetch_assigned_account()
-            if assigned:
-                accounts.append(assigned)
-
-        return accounts
-
     def _run_stream_session(self, account=None):
         acc_label = f"[{account.get('username')}]" if account and isinstance(account, dict) and account.get('username') else (f"[{account.username}]" if account and hasattr(account, 'username') else "[Guest-Viewer]")
         logger.info(f"=== Starting Session for {acc_label} ===")
@@ -420,15 +397,10 @@ class TikTokBoosterOrchestrator:
         self.adb.dismiss_popups()
 
         if self.adb.is_login_or_signup_screen():
-            logger.info("Screen is on login/signup page. Auto-dismissing to enter Live Room...")
-            self.adb.dismiss_popups()
-            if self.adb.is_login_or_signup_screen():
-                self.adb.shell("input keyevent 4")
-                time.sleep(1)
-            # Re-trigger live room navigation intent
-            if self.config.stream_url:
-                self.adb.shell(f'am start -a android.intent.action.VIEW -d "{self.config.stream_url}" {self.adb.package_name}')
-                time.sleep(2)
+            logger.error("[-] Screen is on login/signup page. Live stream cannot be opened.")
+            self.transition_state(RunnerState.LOGIN_FAILED, reason="Live room blocked by Login/SignUp screen")
+            self.send_heartbeat(include_screenshot=True, reason="Live room blocked by login screen")
+            return
 
         if self.adb.is_live_stream_active():
             self.transition_state(RunnerState.WATCHING, reason="TikTok Live stream player confirmed active and receiving video")
